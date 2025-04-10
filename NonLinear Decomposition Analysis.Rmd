@@ -1,0 +1,148 @@
+---
+title: "Non-Linear Mass Loss Analysis"
+output: html_document
+date: "2025-03-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r librarires}
+library(here)
+library(tidyverse)
+```
+# Introduction
+## Parameters, quantities, and posterior predictions
+- Parameters, such as k, are highly model specific. 
+
+- Model agnostic quantities such as mean/median residence time, half-life. 
+
+- Posterior predictions of the models themselves can have useful properties.  
+
+## Models of mass loss
+### Linear, time constant models of mass loss
+- True linear
+[Markdown TYPE OUT EQUATION]
+- Negative exponential (classic)
+[Markdown TYPE OUT EQUATION]
+
+The key thing to note is that these models assume a time-invariant slope. For the negative exponential this is interpreted as a time-invariant 'proportional' mass loss. 
+
+### Non-linear, time varying models of mass loss
+Cornwell and Weedon (2014) and Manzoni et al (2012) explain these models in greater detail. 
+Many examples exist, but two offer a great deal of flexibility to adequately capture the wide range of mass loss trajectories observed in most mass loss time series. 
+
+- Biexponential (aka double exponential; here we specifically use the discrete parallel, though the discrete series model)
+[TYPE OUT EQUATION]
+
+- Weibull (aka Weibull residence)
+[TYPE OUT EQUATION]
+
+
+# Fitting (non-linear) models of mass loss
+We will present two methods for fitting non-linear (and linear) models to mass loss data: estimating parameters via optimization (XXX of non-linear least squares?) or through Bayesian analysis (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods 
+
+We will also turn to an existing dataset for example data, the Detrital Nutrients dataset (XXX link, citation). [XXX Data set description]. In particular, we will use a subset of these data that focused on stream litter, and further focus on time series that have number of observations (litter bag retrievals) greater than the number of parameters our models. 
+
+```{r load Detrital Nutrients}
+litter_df <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/heads/main/data/derived_data/tidied_detrital_nutrients_data.csv")|> # tidied litter time series
+  mutate(mass_prop = Mass_per_remaining/100)|>
+  group_by(cohort_id)|>
+  mutate(series_length = n())|>
+  ungroup()|>
+  filter(series_length > 5)|>
+  rename(mass = "mass_prop", time = "Meas_Day")
+length(unique(litter_df$cohort_id))
+
+litter_df|>
+  group_by(cohort_id)|>
+  arrange(cohort_id, desc(mass))|>
+  slice_tail(n = 1)|>
+  ggplot(aes(x = mass))+geom_histogram(bins = 15)+xlab("Final Mass Proportion")
+
+```
+
+`r length(unique(litter_df$cohort_id))` time series have at least 5 observations/retrievals during decomposition, with the final masses for the time series usually <40% remaining.
+
+
+```{r parameter value distributions in Detrital Nutrients}
+
+
+```
+
+## Optimization and the litterfitter package
+We used the litterfitter package, explained extensively in Cornwell and Weedon (2014), for the first approach. The litterfitter package optimizes the objective function (negative log-likelihood?) using the L-BFGS-B algorithm. It assumes constant, normally distributed error around the estimated mean (i.e., the predicted mass at time t). Error around the estimated parameters is done by bootstrapping: replicates of the time series are created by sampling with replacement, and then fit with the optimization procedure. This creates distributions of parameter values that convey uncertainty in the parameter value or can be resampled from in a Monte Carlo procedure to create new predictions. 
+
+-litterfitter defaults assume timescale of years, which is not generally appropriate for aquatic litter breakdown that tends to proceed much more quickly.
+
+### Example
+litterfitter offers a lot of flexibility in easily fitting models to mass loss data and exploring the output. For now, we will use  time series that are best fit by several different models.  
+
+## Bayesian estimation and brms
+A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure, although likely slowed, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unlikely parameters highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be bounded and draw from continuous positive distributions such as the Gamma and lognormal. 
+
+Priors. In all of t
+```{r priors}
+
+priors_df <- bind_rows(
+  rlnorm(n = 5000, meanlog = -6, sdlog = 2)|>as_tibble()|>
+    mutate(parameter = "negexp_k", median = median(value)),
+  rgamma(n = 5000, 0.3,0.07)|>as_tibble()|>
+    mutate(parameter = "weibull_alpha", median = median(value)),
+  rlnorm(n = 5000, meanlog = 4.5, sdlog = 1.1)|>as_tibble()|>
+    mutate(parameter = "weibull_beta", median = median(value))
+)
+
+ggplot(priors_df, aes(x = value))+
+  geom_density()+
+  facet_wrap(.~parameter, scales = "free")+
+  theme_bw()
+
+priors_df|>
+  filter(case_when(
+    parameter == "negexp_k" ~ value < 0.1,
+    parameter == "weibull_alpha" ~ value < 20,
+    parameter == "weibull_beta" ~ value < 1000
+  ))|>
+ggplot(aes(x = value))+
+  geom_density()+
+  geom_vline(aes(xintercept = median))+
+  facet_wrap(.~parameter, scales = "free")+
+  theme_bw()+ggtitle("Filtered distributions to show dominant probability mass")
+# neg exp priors
+ggplot(data = rlnorm(n = 1000, meanlog = -6, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))+
+#k_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
+# discrete series
+# Weibull alpha
+ggplot(data = rgamma(n = 5000, 0.3,0.07)|>as_tibble())+geom_density(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))+scale_x_continuous(breaks = c(1,10,50), limits = c(0,10))
+#weibull beta
+ggplot(data = rlnorm(n = 5000, meanlog = 4.5, sdlog = 1.1)|>as_tibble())+geom_density(aes(x = value))
+
+
+
+```
+
+```{r}
+
+
+```
+
+# Use of Posterior predictions
+## Median residence time, half-life
+- Choice of model matters here: show error estimates with k vs weibull and biexponential parameters
+
+## Continuous fragmentation losses
+
+## Two stage covariate analysis
+### Temperature
+Typically...
+### Nutrients
+
+
+# Limitations
+- Linear analysis is really simple. Just need to be careful about whether we could be doing better. 
+- Why not just plug in covariates of alpha and beta? 
+- Why not use GAMs? 
+- Why assume normally distributed error (talking about a process misspecification rather than a distributional misspecification)

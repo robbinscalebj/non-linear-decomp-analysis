@@ -26,12 +26,9 @@ weibull_bf <- bf(mass ~ exp(-(time/beta)^alpha), beta + alpha ~1, nl = TRUE)
 weibull_priors <- prior(gamma(1,7), nlpar = "alpha", lb = 0)+
   prior(lognormal(5.5,1), nlpar = "beta", lb = 0)
 
-## Discrete Parallel
-discpar_bf <- bf(mass ~ a*exp(-k1 * time) + (1 - a) * exp(-k2 * time),
-                 a + k1 + k2 ~ 1, nl = TRUE)
-
-
 ## Discrete Series
+discser_bf <- bf(mass ~ a*exp(-k1 * time) + (1 - a) * exp(-k2 * time),
+                 a + k1 + k2 ~ 1, nl = TRUE)
 
 
 
