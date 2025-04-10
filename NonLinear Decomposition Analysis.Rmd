@@ -149,7 +149,14 @@ ggplot(data = rlnorm(n = 5000, meanlog = 4.5, sdlog = 1.1)|>as_tibble())+geom_de
 
 
 # Use of Posterior predictions
-## Median residence time, half-life
+
+$$
+k_{\mathrm{app}}(t) = \frac{d \ln{[A(t)]}}{dt} {(Manzoni_\ et_\ al._\ 2012)}
+$$
+
+
+- Note that negexp and discrete parallel have analytical solutions for derivatives 
+## Median residence/transit time, half-life
 - Choice of model matters here: show error estimates with k vs weibull and biexponential parameters - think about both bias and variance in the error
 - Also relevant to demonstrate that Weibull's beta is (probably) useful here as a more reliable default parameter than k, when the data go to 37% mass loss. But still there are cases where something other than Weibull is a better fit and we would do best to propagate error into a model agnostic decay time
 
