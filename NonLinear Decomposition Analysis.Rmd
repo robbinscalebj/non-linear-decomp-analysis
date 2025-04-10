@@ -21,11 +21,20 @@ library(tidyverse)
 - Posterior predictions of the models themselves can have useful properties.  
 
 ## Models of mass loss
+M is Mt/M0, proportion of mass remaining, as is conventional
+All models here assume normally distributed errors. Other error distributions, such as the Beta and related mixture models, are beyond the scope of this paper.
+
 ### Linear, time constant models of mass loss
 - True linear
-[Markdown TYPE OUT EQUATION]
+$$
+M = -mt
+$$
+This model assumes that mass loss is lost at a linear, non-proportionally declining rate *m*
+
 - Negative exponential (classic)
-[Markdown TYPE OUT EQUATION]
+$$
+M = e^{-kt}
+$$
 
 The key thing to note is that these models assume a time-invariant slope. For the negative exponential this is interpreted as a time-invariant 'proportional' mass loss. 
 
@@ -33,12 +42,21 @@ The key thing to note is that these models assume a time-invariant slope. For th
 Cornwell and Weedon (2014) and Manzoni et al (2012) explain these models in greater detail. 
 Many examples exist, but two offer a great deal of flexibility to adequately capture the wide range of mass loss trajectories observed in most mass loss time series. 
 
-- Biexponential (aka double exponential; here we specifically use the discrete parallel, though the discrete series model)
-[TYPE OUT EQUATION]
+- Discrete parallel (AKA, bi- or double- exponential))
+$$
+M = \alpha e^{-k_1 t} + (1 - \alpha) e^{-k_2 t}
+$$
 
 - Weibull (aka Weibull residence)
-[TYPE OUT EQUATION]
+$$
+M = e^{-\left( \frac{t}{\beta} \right)^\alpha}
+$$
 
+
+### Relationships between models and functional forms
+- True linear is a specific lagged Weibull
+- Negative exponential is special case of Weibull
+- Biexponential is what it says - two exponential models
 
 # Fitting (non-linear) models of mass loss
 We will present two methods for fitting non-linear (and linear) models to mass loss data: estimating parameters via optimization (XXX of non-linear least squares?) or through Bayesian analysis (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods 
@@ -113,7 +131,7 @@ ggplot(aes(x = value))+
 # neg exp priors
 ggplot(data = rlnorm(n = 1000, meanlog = -6, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))+
 #k_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
-# discrete series
+# discrete parallel
 # Weibull alpha
 ggplot(data = rgamma(n = 5000, 0.3,0.07)|>as_tibble())+geom_density(aes(x = value))+
   geom_vline(aes(xintercept = median(value)))+scale_x_continuous(breaks = c(1,10,50), limits = c(0,10))
