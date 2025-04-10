@@ -18,13 +18,15 @@ library(tidyverse)
 
 - Model agnostic quantities such as mean/median residence time, half-life. 
 
-- Posterior predictions of the models themselves can have useful properties.  
+- Posterior predictions of the models themselves can have useful properties. The key here is that drawing from fitted distributions of the parameters can provide relevant error measures to propagate into secondary analysis
 
 ## Models of mass loss
+
 M is Mt/M0, proportion of mass remaining, as is conventional
 All models here assume normally distributed errors. Other error distributions, such as the Beta and related mixture models, are beyond the scope of this paper.
 
 ### Linear, time constant models of mass loss
+The key thing to note is that these models assume a time-invariant slope.
 - True linear
 $$
 M = -mt
@@ -36,7 +38,7 @@ $$
 M = e^{-kt}
 $$
 
-The key thing to note is that these models assume a time-invariant slope. For the negative exponential this is interpreted as a time-invariant 'proportional' mass loss. 
+ For the negative exponential this is interpreted as a time-invariant 'proportional' mass loss. 
 
 ### Non-linear, time varying models of mass loss
 Cornwell and Weedon (2014) and Manzoni et al (2012) explain these models in greater detail. 
@@ -51,12 +53,10 @@ $$
 $$
 M = e^{-\left( \frac{t}{\beta} \right)^\alpha}
 $$
+Beta is essentially a rate parameter interpretable as the time it takes to reach exp(-1) mass. 
+Alpha is a shape parameter, controlling the concavity/convexity of the trajectory shape. Alpha >1 indicates a lagged mass loss trajectory (and could more closely align with a non-log linear model), alpha < 1 indicates a leading mass loss trajectory. The negative exponential model is a special case of the Weibull when alpha = 1. 
 
 
-### Relationships between models and functional forms
-- True linear is a specific lagged Weibull
-- Negative exponential is special case of Weibull
-- Biexponential is what it says - two exponential models
 
 # Fitting (non-linear) models of mass loss
 We will present two methods for fitting non-linear (and linear) models to mass loss data: estimating parameters via optimization (XXX of non-linear least squares?) or through Bayesian analysis (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods 
@@ -147,9 +147,11 @@ ggplot(data = rlnorm(n = 5000, meanlog = 4.5, sdlog = 1.1)|>as_tibble())+geom_de
 
 ```
 
+
 # Use of Posterior predictions
 ## Median residence time, half-life
-- Choice of model matters here: show error estimates with k vs weibull and biexponential parameters
+- Choice of model matters here: show error estimates with k vs weibull and biexponential parameters - think about both bias and variance in the error
+- Also relevant to demonstrate that Weibull's beta is (probably) useful here as a more reliable default parameter than k, when the data go to 37% mass loss. But still there are cases where something other than Weibull is a better fit and we would do best to propagate error into a model agnostic decay time
 
 ## Continuous fragmentation losses
 
