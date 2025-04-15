@@ -8,9 +8,11 @@ date: "2025-03-20"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r librarires}
+```{r libraries}
 library(here)
 library(tidyverse)
+
+
 ```
 # Introduction
 ## Parameters, quantities, and posterior predictions
@@ -85,12 +87,15 @@ litter_df|>
 
 
 ```{r parameter value distributions in Detrital Nutrients}
-
+# load litter fits
+# These were fit according to Robbins et al. (2025)
+litter_fits <- readRDS(here("DetNut_litter_fits.Rds"))|>
+  filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
 
 ```
 
 ## Optimization and the litterfitter package
-We used the litterfitter package, explained extensively in Cornwell and Weedon (2014), for the first approach. The litterfitter package optimizes the objective function (negative log-likelihood?) using the L-BFGS-B algorithm. It assumes constant, normally distributed error around the estimated mean (i.e., the predicted mass at time t). Error around the estimated parameters is done by bootstrapping: replicates of the time series are created by sampling with replacement, and then fit with the optimization procedure. This creates distributions of parameter values that convey uncertainty in the parameter value or can be resampled from in a Monte Carlo procedure to create new predictions. 
+We used the litterfitter package, explained extensively in Cornwell and Weedon (2014), for the first approach. The litterfitter package minimizes the sum of squares using the L-BFGS-B algorithm, which is equivalent to maximizing the likelihood  under the assumed normally-distributed errors and constant variance. Error around the estimated parameters is done by bootstrapping: replicates of the time series are created by sampling with replacement, and then fit with the optimization procedure. This creates distributions of parameter values that convey uncertainty in the parameter value or can be resampled from in a Monte Carlo procedure to create new predictions. 
 
 -litterfitter defaults assume timescale of years, which is not generally appropriate for aquatic litter breakdown that tends to proceed much more quickly.
 
@@ -99,6 +104,9 @@ litterfitter offers a lot of flexibility in easily fitting models to mass loss d
 
 ## Bayesian estimation and brms
 A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure, although likely slowed, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unlikely parameters highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be bounded and draw from continuous positive distributions such as the Gamma and lognormal. 
+
+
+Sigma priors?
 
 Priors. In all of t
 ```{r priors}
@@ -142,29 +150,60 @@ ggplot(data = rlnorm(n = 5000, meanlog = 4.5, sdlog = 1.1)|>as_tibble())+geom_de
 
 ```
 
-```{r}
 
 
-```
 
 
-# Use of Posterior predictions
+# Use of Posterior predictions/simulation
 
 $$
 k_{\mathrm{app}}(t) = \frac{d \ln{[A(t)]}}{dt} {(Manzoni_\ et_\ al._\ 2012)}
 $$
-
+This equation implies something quite intuitive - we can get instantaneous breakdown rates (a first order decay constant) for any arbitrary function A(t) by taking the time derivative of the natural log of the function. This also follows from the negative exponential model's derivative (Lecerf book chapter), which is a constant value since its time derivative is linear on the log scale.
 
 - Note that negexp and discrete parallel have analytical solutions for derivatives 
 ## Median residence/transit time, half-life
 - Choice of model matters here: show error estimates with k vs weibull and biexponential parameters - think about both bias and variance in the error
 - Also relevant to demonstrate that Weibull's beta is (probably) useful here as a more reliable default parameter than k, when the data go to 37% mass loss. But still there are cases where something other than Weibull is a better fit and we would do best to propagate error into a model agnostic decay time
 
+
+- How to do this with bootstrapping/optim appropriately? Single-fit bootstrapping vs non-parametric bootstrap solution
+Probably need to compare regression estimates from one vs another under different non-linearity situations, and against the Bayesian posterior simulation.
+
+Optim approach 1: Non-parametric bootstrap
+- Obtain B sets of parameters, each set created from data resampling
+
+Optim approach 2: Single fit covariance matrix: Single fit bootstrap
+- Fit model
+- get asymptotic covariance matrix by inverting the Hessian (i.e., asymptotic information matrix) - see eqn 3 in Fletcher and Jowett 2022
+- Note that the hessian returned by optim may be numerically unstable, try to implement with numDeriv::hessian() - (though this requires modification to the objective function in litterfitter to have the parameters directly specified in the obj func wrapper)
+- See 'test_new_litterfitter_functionality.R" for test workspace and load of litterfitter fork and 'internal.R' from litterfitter fork.
+
+ solve() does this inversion - 
+"In the unlikely event that you are maximizing the likelihood itself, you need to divide the negative of the hessian by the likelihood to get the observed information [matrix]." `solve(-fit$hessian/fit$value)` -
+"The inverse of the negative hessian is an estimator of the asymptotic covariance matrix"
+https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-with-a-hessian-matrix-how-to-calculate-paramet
+C
+
+-simulate B parameter sets from the multivariate normal, plug in the parameter values and obtain intervals as the produced distributions
+
+- This is basically what gavin simpson does to get his GAM derivatives
+
 ## Continuous fragmentation losses
 
+
+```{r joint model approach}
+# model both time series and ALSO the difference between the quantities
+
+```
+
 ## Two stage covariate analysis
+
 ### Temperature
-Typically...
+- Direct approach
+- Meta-analysis
+What happens when we use k vs k with uncertainty propagated into the analysis
+
 ### Nutrients
 
 
