@@ -1,0 +1,118 @@
+---
+title: "Notes on Serial Weibull"
+output: html_document
+date: "2025-04-25"
+---
+
+This document is notes on a potential serial leaching-Weibull model of decomposition. This model fits some data quite well. The issue is that posterior prediction is difficult given the use of the fmax() function in the formula, which is apparently a stan function and not in R. Extracting the estimated coefficients and predicting with those is very simple, but getting uncertainty around those predictions is not super easy. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+litter_df <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/heads/main/data/derived_data/tidied_detrital_nutrients_data.csv")|> # tidied litter time series
+  mutate(mass_prop = Mass_per_remaining/100)|>
+  group_by(cohort_id)|>
+  mutate(series_length = n())|>
+  ungroup()|>
+  filter(series_length > 5)|>
+  rename(mass = "mass_prop", time = "Meas_Day")
+
+```
+- Discrete series-Weibull
+Assumption here is that leaching proceeds rapidly (heavily baked into priors) and is followed by biologically dominated decomposition which has a possible lag in mass loss compared to the leaching process due to decomposer growth and colonization.
+
+$$
+\begin{align*}
+ M_t &= (1 - r) \cdot \exp(-k_1 \cdot t) + r \cdot \exp\left( -\left( \frac{\max(0,\, t - \frac{\log(0.05)}{k_1})}{\beta} \right)^\alpha \right) \\
+r &\sim \mathrm{Beta}(8,\ 1.5) \\
+k_1 &\sim \mathrm{LogNormal}(0.2,\ 0.1) \\
+\alpha &\sim \mathrm{Gamma}(1,\ 0.2) \\
+\beta &\sim \mathrm{LogNormal}(6,\ 1)
+\end{align*}
+$$
+Proof of concept
+- COuld calculate weibulls from simulations in Robbins et al 2025: Revisiting k based on Lecerf's publication.
+```{r}
+r_true     <- 0.8   # Fraction nonleachable pool
+k1_true    <- 0.5  # Leaching rate
+beta_true  <- 120   # Weibull scale
+alpha_true <- 2.5   # Weibull shape
+
+
+serial_weibull <- function(time, r, k1, beta, alpha){
+(1 - r) * exp(-k1 * time) +
+       r * exp(-((pmax(0, time - log(1000)/k1) / beta)^alpha))
+}
+
+serial_leachable <- function(time, r, k1, beta, alpha){
+  (1 - r) * exp(-k1 * time)
+}
+
+serial_nonleachable <- function(time, r, k1, beta, alpha){
+  r * exp(-((pmax(0, time - log(0.05)/k1) / beta)^alpha))
+}
+# Simulate true values
+disc_comb <- tibble(time = seq(0,200, by = 2))|>
+  mutate(M_leachable = serial_leachable(time, r = r_true, k1 = k1_true, beta = beta_true, alpha = alpha_true),
+         M_nonleachable = serial_nonleachable(time, r = r_true, k1 = k1_true, beta = beta_true, alpha = alpha_true),
+         M = M_leachable + M_nonleachable)
+
+
+# Plot
+ggplot(disc_comb, aes(x = time)) +
+  geom_point(aes(y = M), color = "black", size = 1.5, alpha = 0.6) +
+  #geom_line(aes(y = M_true), color = "blue", linewidth = 1.2) +
+  labs(
+    title = "Simulated Serial Decomposition Model with Weibull",
+    y = "Remaining Mass (M)",
+    x = "Time"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+## Serial weibull
+
+sweibull_bf <- bf(mass ~ (1 - r) * exp(-k1 * time) + r * exp(-((fmax(0, time - log(0.05)/k1) / beta)^alpha)), 
+                  r + k1 + beta + alpha ~1, nl = TRUE)
+sweibull_priors <- prior(beta(8,1.5), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
+  prior(lognormal(0.2,0.1), nlpar = "k1", lb = 0)+ #fractional mass loss where all leaching done (5% leachable remaining) in 2-3 days, with most mass around  
+  prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(6,1), nlpar = "beta", lb = 0)
+
+
+```
+
+```{r}
+
+sweib_289_brm <- brm(formula = sweibull_bf, prior = sweibull_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99)) #beta here is very poorly estimated because time series too short, for one thing
+
+sweib_436_brm <- brm(formula = sweibull_bf, prior = sweibull_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+
+blah <- fixef(sweib_436_brm)|>as.data.frame()|>rownames_to_column()|>mutate(rowname = str_remove(rowname, "_Intercept"))|>select(rowname, Estimate)|>
+  pivot_wider(names_from = rowname, values_from = Estimate)|>
+  expand_grid(time = seq(0, max(example_series|>filter(cohort_id == 436)|>select(time)), by = 0.1))|>
+  mutate(M_leachable = serial_leachable(time = time, r = r, k1 = k1, beta = beta, alpha = alpha),
+         M_nonleachable = serial_nonleachable(time, r = r, k1 = k1, beta = beta, alpha = alpha),
+         M = M_leachable + M_nonleachable)
+
+# can we use the R-based packages to predict if we define fmax in R? 
+
+fmax <- function(x, y){
+  max(x, y)
+}
+ggplot()+
+  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass))+
+  geom_line(data = blah, aes(x = time, y = M))
+```

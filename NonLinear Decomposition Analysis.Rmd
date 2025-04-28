@@ -9,14 +9,14 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r libraries}
+devtools::load_all("D:/Github_Repos/litterfitter")
 library(here)
 library(tidyverse)
-
-
+library(brms)
 ```
 # Introduction
 ## Parameters, quantities, and posterior predictions
-- Parameters, such as k, are highly model specific. 
+- Parameters, such as k, are highly model specific. They may also suffer from non-identifiability/equifinality (do the bootstrap distributions/pposterior distributions play this out?)
 
 - Model agnostic quantities such as mean/median residence time, half-life. 
 
@@ -44,24 +44,48 @@ $$
 
 ### Non-linear, time varying models of mass loss
 Cornwell and Weedon (2014) and Manzoni et al (2012) explain these models in greater detail. 
-Many examples exist, but two offer a great deal of flexibility to adequately capture the wide range of mass loss trajectories observed in most mass loss time series. 
+Many examples exist, but two offer a great deal of flexibility to adequately capture the general range of mass loss trajectories observed in most mass loss time series. 
+
+
+- Discrete series
+$$
+M_t = \frac{(1 - r) k_1 e^{-k_2 t} - (k_2 - k_1 r) e^{-k_1 t}}{k_1 - k_2}
+$$
 
 - Discrete parallel (AKA, bi- or double- exponential))
 $$
-M = \alpha e^{-k_1 t} + (1 - \alpha) e^{-k_2 t}
+M_t = \alpha e^{-k_1 t} + (1 - \alpha) e^{-k_2 t}
 $$
+```{r}
+predict_discpar <- function(time, a, k1, k2){
+  a * exp(-k1 * time) + (1 - a) * exp(-k2 * time)
+}
+
+discpar_sims <- expand_grid(time = seq(0,1000, by = 1),
+                            a = c(0.75,0.5,0.25),
+                            k1 = c(0.0001,0.01),
+                            k2 = c(0.01,0.1,0.5)
+                       )|>
+  mutate(mass = predict_discpar(time, a, k1, k2))|>
+  mutate(across(c(a,k1,k2), as_factor))
+
+ggplot(discpar_sims, aes(x = time, y = mass, color = a))+
+  geom_line()+
+  facet_wrap(k1~k2)
+```
+Should really do a decent job of understanding k2 here - I thought erroneously that this would always be smaller than k1 on a leading trajectory but I was wrong. Has important implications for how to interpret k2 vs k1 (which appears to be conventional as k), e.g., with 'correcting' curves for leaching and then estimating Arrhenius temperature sensitivity - is this valid?
+- Note here that k2 is the labile fraction
 
 - Weibull (aka Weibull residence)
 $$
-M = e^{-\left( \frac{t}{\beta} \right)^\alpha}
+M_t = e^{-\left( \frac{t}{\beta} \right)^\alpha}
 $$
 Beta is essentially a rate parameter interpretable as the time it takes to reach exp(-1) mass. 
 Alpha is a shape parameter, controlling the concavity/convexity of the trajectory shape. Alpha >1 indicates a lagged mass loss trajectory (and could more closely align with a non-log linear model), alpha < 1 indicates a leading mass loss trajectory. The negative exponential model is a special case of the Weibull when alpha = 1. 
 
 
-
 # Fitting (non-linear) models of mass loss
-We will present two methods for fitting non-linear (and linear) models to mass loss data: estimating parameters via optimization (XXX of non-linear least squares?) or through Bayesian analysis (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods 
+We will present two methods for fitting non-linear (and linear) models to mass loss data: estimating parameters via optimization (XXX of non-linear least squares?) or through Bayesian analysis (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods. We could also linearly interpolate data or use LOESS methods but we are interested in highlighting two methods that are commonly used in probabilistic frameworks where error can be reasonably estimated in the model fits and propagated into model-derived quantities and downstream analysis of model predictions or parameters.
 
 We will also turn to an existing dataset for example data, the Detrital Nutrients dataset (XXX link, citation). [XXX Data set description]. In particular, we will use a subset of these data that focused on stream litter, and further focus on time series that have number of observations (litter bag retrievals) greater than the number of parameters our models. 
 
@@ -73,7 +97,7 @@ litter_df <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/he
   ungroup()|>
   filter(series_length > 5)|>
   rename(mass = "mass_prop", time = "Meas_Day")
-length(unique(litter_df$cohort_id))
+
 
 litter_df|>
   group_by(cohort_id)|>
@@ -85,6 +109,23 @@ litter_df|>
 
 `r length(unique(litter_df$cohort_id))` time series have at least 5 observations/retrievals during decomposition, with the final masses for the time series usually <40% remaining.
 
+Examples:
+Series 436 - lagged trajectory, Weibull best by each model GOF/parsimony estimator
+Series 289 - leading trajectory, Weibull barely best model but discrete parallel also very good 
+Series 118 - Constant variance, k is very good here
+
+```{r define example time series}
+example_series <- litter_df|>
+  filter(cohort_id %in% c(118,289,436))
+
+ggplot(example_series, aes(x = time, y = mass))+
+  geom_point()+
+  facet_wrap(.~cohort_id)+
+  scale_y_continuous(trans = "log")
+
+```
+
+
 
 ```{r parameter value distributions in Detrital Nutrients}
 # load litter fits
@@ -92,23 +133,155 @@ litter_df|>
 litter_fits <- readRDS(here("DetNut_litter_fits.Rds"))|>
   filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
 
+tidy_fits <- 
+  litter_fits|>
+  mutate(negexp_converge_code = map_dbl(negexp_fit, ~pluck(., "optimFit", "convergence")),
+         negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc = map_dbl(negexp_fit, ~pluck(., "fitAICc")),
+         negexp_logLik = map_dbl(negexp_fit, ~pluck(., "logLik")),
+         negexp_BIC = map_dbl(negexp_fit, ~pluck(., "fitBIC")),
+         negexp_pred = map(negexp_fit, ~pluck(., "predicted"))
+  )|>
+  mutate(weibull_converge_code = map_dbl(weibull_fit, ~pluck(., "optimFit", "convergence")),
+         weibull_beta = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 1)),
+         weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)),
+         weibull_AICc = map_dbl(weibull_fit, ~pluck(., "fitAICc")),
+         weibull_logLik = map_dbl(weibull_fit, ~pluck(., "logLik")),
+         weibull_BIC = map_dbl(weibull_fit, ~pluck(., "fitBIC")),
+         weibull_pred = map(weibull_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(discpar_converge_code = map_dbl(discpar_fit, ~pluck(., "optimFit", "convergence")),
+         discpar_a = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 1)),
+         discpar_k1 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 2)),
+         discpar_k2 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 3)),
+         discpar_AICc = map_dbl(discpar_fit, ~pluck(., "fitAICc")),
+         discpar_logLik = map_dbl(discpar_fit, ~pluck(., "logLik")),
+         discpar_BIC = map_dbl(discpar_fit, ~pluck(., "fitBIC")),
+         discpar_pred = map(discpar_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(discser_converge_code = map_dbl(discser_fit, ~pluck(., "optimFit", "convergence")),
+         discser_r = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 1)),
+         discser_k1 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 2)),
+         discser_k2 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 3)),
+         discser_AICc = map_dbl(discser_fit, ~pluck(., "fitAICc")),
+         discser_logLik = map_dbl(discser_fit, ~pluck(., "logLik")),
+         discser_BIC = map_dbl(discser_fit, ~pluck(., "fitBIC")),
+         discser_pred = map(discser_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(contqual_converge_code = map_dbl(contqual_fit, ~pluck(., "optimFit", "convergence")),
+         contqual_b = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 1)),
+         contqual_a = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 2)),
+         contqual_AICc = map_dbl(contqual_fit, ~pluck(., "fitAICc")),
+         contqual_logLik = map_dbl(contqual_fit, ~pluck(., "logLik")),
+         contqual_BIC = map_dbl(contqual_fit, ~pluck(., "fitBIC")),
+         contqual_pred = map(contqual_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(negexplim_converge_code = map_dbl(negexplim_fit, ~pluck(., "optimFit", "convergence")),
+         negexplim_k = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 1)),
+         negexplim_a = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 2)),
+         negexplim_b = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 3)),
+         negexplim_AICc = map_dbl(negexplim_fit, ~pluck(., "fitAICc")),
+         negexplim_logLik = map_dbl(negexplim_fit, ~pluck(., "logLik")),
+         negexplim_BIC = map_dbl(negexplim_fit, ~pluck(., "fitBIC")),
+         negexplim_pred = map(negexplim_fit, ~pluck(., "predicted"))
+  )|>
+  select(-c(negexp_fit, weibull_fit, discser_fit, discpar_fit, contqual_fit, negexplim_fit))
+
+mod_gof <- tidy_fits|>
+  #reshape for usability
+  select(cohort_id, contains(c("AIC", "AICc", "BIC", "logLik")))|>
+  pivot_longer(cols = -c(cohort_id), names_to = c("model", "gof_metric"), names_sep = "_", values_to = "value")|>
+  filter(model %in% c("negexp","discpar","weibull"))|>
+  group_by(cohort_id, gof_metric)|>
+  mutate(best_in_cohort = case_when(gof_metric == "logLik" & value == max(value) ~ 1, #select highest when logLik
+                                    gof_metric != "logLik" & value == min(value) ~ 1, # select lowest when AIC/BIC
+                                    .default = 0))
+
+tidy_fits|>
+  select(negexp_k, discpar_a, discpar_k1, discpar_k2, weibull_alpha, weibull_beta)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_density()+
+  facet_wrap(.~parameter, scales = "free")
+
+tidy_fits|>
+  select(discpar_a, discpar_k1, discpar_k2)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~parameter, scales = "free")+
+  scale_x_continuous(limits = c(0,2))
+
+tidy_fits|>
+  ggplot(aes(x = discpar_a, y = discpar_k1))+geom_point()+scale_y_log10()+geom_smooth(method = "lm")
+tidy_fits|>
+  ggplot(aes(x = discpar_a, y = discpar_k2))+geom_point()+scale_y_log10()+geom_smooth(method = "lm")
+
+tidy_fits|>
+  ggplot(aes(x = discpar_k1-discpar_k2))+geom_histogram()
 ```
 
-## Optimization and the litterfitter package
-We used the litterfitter package, explained extensively in Cornwell and Weedon (2014), for the first approach. The litterfitter package minimizes the sum of squares using the L-BFGS-B algorithm, which is equivalent to maximizing the likelihood  under the assumed normally-distributed errors and constant variance. Error around the estimated parameters is done by bootstrapping: replicates of the time series are created by sampling with replacement, and then fit with the optimization procedure. This creates distributions of parameter values that convey uncertainty in the parameter value or can be resampled from in a Monte Carlo procedure to create new predictions. 
+## Likelihood optimization and the litterfitter package
+We used the litterfitter package, explained extensively in Cornwell and Weedon (2014), for the first approach. The litterfitter package minimizes the sum of squares using the L-BFGS-B algorithm, which is equivalent to maximizing the likelihood  under the assumed normally-distributed errors and constant variance. Error around the estimated parameters is done by bootstrapping: replicates of the time series are created by sampling with replacement, and then re-fit with the optimization procedure. This creates distributions of parameter values that convey uncertainty in the parameter value or create new predictions from the implied predictions of each parameter set. 
 
 -litterfitter defaults assume timescale of years, which is not generally appropriate for aquatic litter breakdown that tends to proceed much more quickly.
 
 ### Example
-litterfitter offers a lot of flexibility in easily fitting models to mass loss data and exploring the output. For now, we will use  time series that are best fit by several different models.  
+litterfitter offers a lot of flexibility in easily fitting models to mass loss data and exploring the output. For now, we will use  time series that are best fit by several different models and represent three broad examples of decay trajectories. 
+
+
+
+```{r litterfitter fits to example time series}
+lf_iters<-9999 #takes 13 minutes on 1 core
+
+if(file.exists(here("data/lf_example_fits.Rds"))){
+  lf_example_fits <- readRDS(here("data/lf_example_fits.Rds"))
+  
+}else{
+  
+
+lf_example_fits <- example_series|>
+    select(cohort_id, time, mass)|>
+  group_by(cohort_id)|>
+  nest()|>ungroup()|>
+  mutate(negexp_fit = map(data, ~fit_litter(time = .$time, mass.remaining = .$mass, 
+                            model = "neg.exp", iters = lf_iters,
+                            upper = c(2),
+                            lower = c(1e-08))),
+         discpar_fit = map(data, ~fit_litter(time = .$time, mass.remaining = .$mass, 
+                            model = "discrete.parallel", iters = lf_iters,
+                            upper = c(1, 2, 2), #A, K1, K2 
+                            lower = c(0, 1e-12, 1e-17))),
+         weibull_fit = map(data, ~fit_litter(time = .$time, mass.remaining = .$mass, 
+                            model = "weibull", iters = lf_iters,
+                    lower = c(0.1,0.001), #beta, then alpha 
+                    upper = c(10000,100))))|>
+  mutate(negexp_bs = map(negexp_fit, ~bootstrap_parameters(., nboot = lf_iters, 
+                            upper = c(2),
+                            lower = c(1e-08))|>
+                           unclass()|>as_tibble(.name_repair = ~ c("k", "V2"))|>select(k)),
+        discpar_bs = map(discpar_fit, ~bootstrap_parameters(., nboot = lf_iters, 
+                            upper = c(1, 2, 2), #A, K1, K2 
+                            lower = c(0, 1e-12, 1e-17))|>
+          unclass()|>as_tibble(.name_repair = ~ c("A", "k1", "k2", "V4"))|>select(A, k1, k2)),
+        weibull_bs = map(weibull_fit, ~bootstrap_parameters(., nboot = lf_iters, 
+                            lower = c(0.1,0.001), #beta, then alpha 
+                            upper = c(10000,100))|>
+          unclass()|>as_tibble(.name_repair = ~ c("beta", "alpha", "V4"))|>select(alpha, beta)))
+
+saveRDS(lf_example_fits, here("data/lf_example_fits.Rds"))
+}
+#ggplot(lf_examples_bs$weibull_bs[[2]], aes(x = beta))+geom_density()
+
+```
+The distributions in these bootstrapped parameters suggest there is some instability, which is not too surprising if we are bootstrapping a relatively small sample where some samples can have particularly high leverage on the overall fit. 
 
 ## Bayesian estimation and brms
-A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure, although likely slowed, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unlikely parameters highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be bounded and draw from continuous positive distributions such as the Gamma and lognormal. 
+A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure with the analytical models, although somewhat slower particularly if parallelizing the bootstrapping, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unlikely parameters highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be drawn from continuous positive distributions such as the Gamma and lognormal. 
+
+### Analytical models estimated with MCMC
 
 
-Sigma priors?
-
-Priors. In all of t
 ```{r priors}
 
 priors_df <- bind_rows(
@@ -137,21 +310,123 @@ ggplot(aes(x = value))+
   facet_wrap(.~parameter, scales = "free")+
   theme_bw()+ggtitle("Filtered distributions to show dominant probability mass")
 # neg exp priors
-ggplot(data = rlnorm(n = 1000, meanlog = -6, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))+
+ggplot(data = rlnorm(n = 1000, meanlog = -6, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
 #k_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
-# discrete parallel
-# Weibull alpha
-ggplot(data = rgamma(n = 5000, 0.3,0.07)|>as_tibble())+geom_density(aes(x = value))+
-  geom_vline(aes(xintercept = median(value)))+scale_x_continuous(breaks = c(1,10,50), limits = c(0,10))
-#weibull beta
-ggplot(data = rlnorm(n = 5000, meanlog = 4.5, sdlog = 1.1)|>as_tibble())+geom_density(aes(x = value))
+```
 
+```{r discpar priors}
+# discrete parallel alpha
+ggplot(data = runif(5000, 0,1)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
+
+#if alpha were a leachable fraction, we might want to assume a prior like rbeta(n = 5000,8,1.5)
+
+#discpar k1 - want mass centered around 0.25, but may need to assume we can get out to about 15
+ggplot(data = rlnorm(n = 1000, meanlog = -1, sdlog = 10)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,5))
+#discpar k2
+ggplot(data = rlnorm(n = 1000, meanlog = -1, sdlog = 4)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
+```
+
+```{r discser priors}
+
+
+```
+
+```{r weibull priors}
+# Weibull alpha
+ggplot(data = rgamma(n = 5000, 1,0.2)|>as_tibble())+geom_density(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))+scale_x_continuous(breaks = c(1,10,50), limits = c(0,30))
+#weibull beta
+ggplot(data = rlnorm(n = 5000, meanlog = 5.5, sdlog = 1)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+
+# sWeibull alpha
+ggplot(data = rgamma(n = 5000, 2,0.2)|>as_tibble())+geom_density(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))+scale_x_continuous(breaks = c(1,10,50), limits = c(0,2))
+
+#sweibull beta
+ggplot(data = rlnorm(n = 5000, meanlog = 6, sdlog = 1)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+```
+
+```{r set up priors and formulae}
+
+k_bf <- bf(mass ~ exp(-k*time), k ~1, nl = TRUE)
+k_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
+
+## Weibull
+weibull_bf <- bf(mass ~ exp(-(time/beta)^alpha), beta + alpha ~1, nl = TRUE)
+weibull_priors <- prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5.5,1), nlpar = "beta", lb = 0)
+
+## Discrete parallel
+discpar_bf <- bf(mass ~ a*exp(-k1 * time) + (1 - a) * exp(-k2 * time),
+                 a + k1 + k2 ~ 1, nl = TRUE)
+
+discpar_priors <- prior(uniform(0,1), nlpar = "a", lb = 0, ub = 1)+
+  prior(lognormal(-1,4), nlpar = "k1", lb = 0)+
+  prior(lognormal(-1,4), nlpar = "k2", lb = 0)
+
+#discpar a, k1, and k2 are probably quite correlated
+
+
+```
+
+```{r fit brms models}
+# example series: 118,289,436
+
+
+k_118_brm <- brm(formula = k_bf, prior = k_priors,
+                 data = example_series|>filter(cohort_id == 118), 
+                 family = "gaussian", 
+                 iter = 4000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/k_118_brm"))
+k_289_brm <- brm(formula = k_bf, prior = k_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 4000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/k_289_brm"))
+k_436_brm <- brm(formula = k_bf, prior = k_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 4000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/k_436_brm"))
+
+
+weib_118_brm <- brm(formula = weibull_bf, prior = weibull_priors,
+                 data = example_series|>filter(cohort_id == 118), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99), 
+                 file = here("data/brms_objects/weib_118_brm")) # model hard to converge here
+weib_289_brm <- brm(formula = weibull_bf, prior = weibull_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/weib_289_brm")) # pairs plot here has some non-identifiability in  beta/alpha
+weib_436_brm <- brm(formula = weibull_bf, prior = weibull_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/weib_436_brm"))
+
+
+discpar_289_brm <- brm(formula = discpar_bf, prior = discpar_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discpar_289_brm"))
 
 
 ```
 
 
 
+
+### Gaussian processes and GAMs (estimated with MCMC)
+
+- A strong prior could be placed on k in the GAMs - shouldn't allow these to be very curvy at all. 
 
 
 # Use of Posterior predictions/simulation
@@ -176,14 +451,12 @@ Optim approach 1: Non-parametric bootstrap
 Optim approach 2: Single fit covariance matrix: Single fit bootstrap
 - Fit model
 - get asymptotic covariance matrix by inverting the Hessian (i.e., asymptotic information matrix) - see eqn 3 in Fletcher and Jowett 2022
-- Note that the hessian returned by optim may be numerically unstable, try to implement with numDeriv::hessian() - (though this requires modification to the objective function in litterfitter to have the parameters directly specified in the obj func wrapper)
+- Note that the hessian returned by optim may be numerically unstable, try to implement with numDeriv::hessian() - testing gave the same answer between the two Hessians
 - See 'test_new_litterfitter_functionality.R" for test workspace and load of litterfitter fork and 'internal.R' from litterfitter fork.
 
- solve() does this inversion - 
-"In the unlikely event that you are maximizing the likelihood itself, you need to divide the negative of the hessian by the likelihood to get the observed information [matrix]." `solve(-fit$hessian/fit$value)` -
 "The inverse of the negative hessian is an estimator of the asymptotic covariance matrix"
 https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-with-a-hessian-matrix-how-to-calculate-paramet
-C
+
 
 -simulate B parameter sets from the multivariate normal, plug in the parameter values and obtain intervals as the produced distributions
 
@@ -211,4 +484,7 @@ What happens when we use k vs k with uncertainty propagated into the analysis
 - Linear analysis is really simple. Just need to be careful about whether we could be doing better. 
 - Why not just plug in covariates of alpha and beta? 
 - Why not use GAMs? 
-- Why assume normally distributed error (talking about a process misspecification rather than a distributional misspecification)
+-- GAMs not out-of-the-box constrained to 1 at t = 0
+- Why assume normally distributed error (talking about a process misspecification rather than a distributional misspecification?)
+  -- If we specify an Intercept with uncertainty (either estimated or as a latent value) rather than use the functional known of M=1|t=0
+  -- Interesting thought: Are we more uncertain about t0.75 than t0.5 just because of errors growing along the function? Does this imply something about needing a link function? 

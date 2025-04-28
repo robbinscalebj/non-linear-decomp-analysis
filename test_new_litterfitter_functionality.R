@@ -15,25 +15,23 @@ test_series <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/
   ungroup()|>
   filter(series_length > 5)|>
   rename(mass = "mass_prop", time = "Meas_Day")|>
-  filter(cohort_id == 341)
+  filter(cohort_id == 118)
 
 # fit
-tic()
+
 fit_16 <-fit_litter(mass.remaining = test_series$mass, time = test_series$time, 
                     iters = 1000, model = "weibull",
-                    lower = c(0.1,0.001),#beta, then alpha 
-                    upper = c(10000,100))
-toc() #1000 iterations of discrete parallel takes ~ 8.5 s without Hessian
+                    lower = c(0.1,0.001), #beta, then alpha 
+                    upper = c(10000,100)) 
 
+fit_16_dp <-fit_litter(mass.remaining = test_series$mass, time = test_series$time, 
+                    iters = 1000, model = "discrete.parallel") 
+plot(fit_16)
 
-fit_16_cov <- solve(fit_16$optimFit$hessian/fit_16$optimFit$value) 
+fit_16_cov <- solve(fit_16$optimFit$hessian/fit_16$optimFit$value)
 
+#fit_16_cov2 <- solve(hess_weibull(fit_16)/fit_16$optimFit$value)
 
-weibull2 <- function(x, beta, alpha, upper = c(10, 10), lower = c(1e-04, 1e-04)) {
-  exp(-(x/beta)^alpha)
-}
-
-hess.num <- numDeriv::hessian(x = fit_16$optimFit$par, func = weibull)
 # we are minimizing (sum of squares) here, so don't negate Hessian
 fit_16_coefs <- fit_16$optimFit$par
 
