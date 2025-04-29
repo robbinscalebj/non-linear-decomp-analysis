@@ -20,7 +20,7 @@ Litter decomposition has broad importance to most ecosystems, leading to an enor
 
 The negative exponential model has been criticized extensively. It has proved incredibly useful as a simple and powerful approximation of decomposition dynamics. As a simple model, however, this approximation can lack precision that may be consequential for decision making or may hinder the exposition of our understanding of litter decomposition. For example... prediction error. Recent analyses have found major drivers of significant deviations from the assumptions of the negative exponential model. Alternative models that allow time-varying decomposition rates often fit data better.
 
-One enduring quality of the negative exponential model is the familiarity of k. It is easily comparable across decomposition time series. This has likely hindered the use and interpretation of alternative models of decomposition that allow time-varying rates of mass loss. Alternative models have varying numbers of parameters, making synthesis difficult: if a time series is fit to its best model,   
+One enduring quality of the negative exponential model is the familiarity of k. It is easily comparable across decomposition time series, so most studies have relied on parameter comparison (of k estimates) to study litter decomposition. In particular, because k is linear, it is simple to include as in linear model approaches such as ANCOVA with environmental or instrinsic litter qualities as covariates. This ease has likely hindered the use and interpretation of alternative models of decomposition that allow time-varying rates of mass loss. Alternative models have varying and greater numbers of parameters than the negative exponential, making synthesis difficult when different model fits are used. A principled choice on a model could be made, and errors could be accepted as is, but there has been little consideration of how to interpret decomposition processes while synthesizing these model fits with the many prior estimates of k.
 
 - Parameters, such as k, are highly model specific. They may also suffer from non-identifiability/equifinality (do the bootstrap distributions/pposterior distributions play this out?)
 
@@ -29,7 +29,13 @@ One enduring quality of the negative exponential model is the familiarity of k. 
 
 - Posterior predictions of the models themselves can have useful properties. The key here is that drawing from fitted distributions of the parameters can provide relevant error measures to propagate into secondary analysis
 
-This paper briefly recaps models of mass loss, fitting those models to data in two optimization frameworks, and focuses on the interpretation and synthesis of parameters and quantities from different kinds of model fits. Because litter time series data are typically not data rich, we focus on a data-driven approach where data quantity may be inadequate for more complex machine learning, generalized additive models, or gaussian processes, using analytical models that rely on simple, biologically relevant assumptions to constrain the functional forms of the mass loss. We hope this will serve as a guide for measuring and estimating more time-resolved decomposition time series. 
+This paper briefly recaps models of mass loss, fitting those models to data in two optimization frameworks, and focuses on the interpretation and synthesis of parameters and quantities from different kinds of model fits. Because litter time series data are typically not data rich, we focus on a data-driven approach where data quantity may be inadequate for more complex machine learning, generalized additive models, or gaussian processes, using analytical models that rely on simple, biologically relevant assumptions to constrain the functional forms of the mass loss. We hope this will serve as a guide for measuring and estimating more time-resolved decomposition time series.
+
+We are motivated by the following questions:
+- Considering the utility of time-varying models, how can litter decomposition mass loss time series be fit to such models? What are the pitfalls to fitting these models with different approaches, such as nonidentifiability?
+- How should we compare fits from time-varying models to make inferences about litter decomposition and its controls?
+
+
 
 ## Models of mass loss
 
@@ -433,14 +439,18 @@ discpar_289_brm <- brm(formula = discpar_bf, prior = discpar_priors,
 
 
 
-### Gaussian processes and GAMs (estimated with MCMC)
 
-- A strong prior could be placed on k in the GAMs - shouldn't allow these to be very curvy at all. 
-
-# Model comparison and model averaging
+## Model comparison and model averaging
  Without a principled choice for a model, multiple models may make sense. 
  
-# Use of Posterior predictions/simulation
+
+# Interpretation and analysis of fitted models
+# Parameter comparison
+-Increasing parameters in data sparse situations increases the likelihood of nonidentifiability. 
+-Parameters don't mean the same thing across models, obviously, but they can be relatable. 
+-Does propagating uncertainty into the use 
+
+## Beyond parameter comparison: Posterior predictions/simulation
 
 
 
@@ -450,7 +460,8 @@ $$
 This equation implies something quite intuitive - we can get instantaneous breakdown rates (a first order decay constant) for any arbitrary function A(t) by taking the time derivative of the natural log of the function. This also follows from the negative exponential model's derivative (Lecerf book chapter), which is a constant value since its time derivative is linear on the log scale.
 
 - Note that negexp and discrete parallel have analytical solutions for derivatives 
-## Median residence/transit time, half-life
+
+
 - Choice of model matters here: show error estimates with k vs weibull and biexponential parameters - think about both bias and variance in the error
 - Also relevant to demonstrate that Weibull's beta is (probably) useful here as a more reliable default parameter than k, when the data go to 37% mass loss. But still there are cases where something other than Weibull is a better fit and we would do best to propagate error into a model agnostic decay time
 
@@ -475,6 +486,7 @@ https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-
 
 - This is basically what gavin simpson does to get his GAM derivatives
 
+## Median residence/transit time, half-life
 ## Continuous fragmentation losses
 
 
