@@ -9,13 +9,15 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r libraries}
-devtools::load_all("D:/Github_Repos/litterfitter")
+#devtools::load_all("D:/Github_Repos/litterfitter")
+devtools::load_all("C:/Users/robbi/Documents/litterfitter") 
+
 library(here)
 library(tidyverse)
 library(brms)
 ```
 # Introduction
-## Parameters, quantities, and posterior predictions
+
 Litter decomposition has broad importance to most ecosystems, leading to an enormous quantity of studies focused on this process through the history of the scientific field of ecology. One of the most common tactics to study litter decomposition is by observing mass loss from cohorts of litter through time, usually in litter bags. The vast majority of studies then analyze these time series by fitting the data to a negative exponential model, using the slope parameter as an indicator of mass loss rates for each cohort and as a metric for comparison across litters of different taxa, chemistry, and environmental conditions. 
 
 The negative exponential model has been criticized extensively. It has proved incredibly useful as a simple and powerful approximation of decomposition dynamics. As a simple model, however, this approximation can lack precision that may be consequential for decision making or may hinder the exposition of our understanding of litter decomposition. For example... prediction error. Recent analyses have found major drivers of significant deviations from the assumptions of the negative exponential model. Alternative models that allow time-varying decomposition rates often fit data better.
@@ -29,7 +31,7 @@ One enduring quality of the negative exponential model is the familiarity of k. 
 
 - Posterior predictions of the models themselves can have useful properties. The key here is that drawing from fitted distributions of the parameters can provide relevant error measures to propagate into secondary analysis
 
-This paper briefly recaps models of mass loss, fitting those models to data in two optimization frameworks, and focuses on the interpretation and synthesis of parameters and quantities from different kinds of model fits. Because litter time series data are typically not data rich, we focus on a data-driven approach where data quantity may be inadequate for more complex machine learning, generalized additive models, or gaussian processes, using analytical models that rely on simple, biologically relevant assumptions to constrain the functional forms of the mass loss. We hope this will serve as a guide for measuring and estimating more time-resolved decomposition time series.
+This paper briefly recaps models of mass loss, fitting those models to data in two optimization frameworks, and focuses on the interpretation and synthesis of parameters and quantities from different kinds of model fits. Because litter time series data are typically not data rich, we focus on a data-driven approach where data quantity may be inadequate for more complex machine learning, generalized additive models, or gaussian processes, using analytical models that rely on simple, biologically relevant assumptions to constrain the functional forms of the mass loss. We hope this will serve as a guide for measuring and estimating more time-resolved decomposition time series. The adoption of these alternative models has been slow, particularly in aquatic studies. 
 
 We are motivated by the following questions:
 - Considering the utility of time-varying models, how can litter decomposition mass loss time series be fit to such models? What are the pitfalls to fitting these models with different approaches, such as nonidentifiability?
@@ -66,6 +68,26 @@ Many examples exist, but two offer a great deal of flexibility to adequately cap
 $$
 M_t = \frac{(1 - r) k_1 e^{-k_2 t} - (k_2 - k_1 r) e^{-k_1 t}}{k_1 - k_2}
 $$
+Here k1 is a 
+
+
+```{r}
+predict_discser <- function(time, r, k1, k2){
+  (((1 - r)*k1*exp(-k2*time)) - ((k2 - k1*r)*exp(-k1*time)))/(k1 - k2)
+}
+
+discser_sims <- expand_grid(time = seq(0,1000, by = 1),
+                            r = c(0.05,0.15,0.25),
+                            k1 = c(0.01,0.05,0.2),
+                            k2 = c(0.001,0.005,0.01)
+                       )|>
+  mutate(mass = predict_discser(time, r, k1, k2))|>
+  mutate(across(c(r,k1,k2), as_factor))
+
+ggplot(discser_sims, aes(x = time, y = mass, color = r))+
+  geom_line()+
+  facet_wrap(k1~k2)
+```
 
 - Discrete parallel (AKA, bi- or double- exponential))
 $$
@@ -95,7 +117,11 @@ Should really do a decent job of understanding k2 here - I thought erroneously t
 $$
 M_t = e^{-\left( \frac{t}{\beta} \right)^\alpha}
 $$
-Beta is essentially a rate parameter interpretable as the time it takes to reach exp(-1) mass. 
+Beta is essentially a rate parameter interpretable as the time it takes to reach exp(-1) mass. We can call this, then 
+$$
+t_{1/e} = \beta_{Weibull}\ or\ t_{e^-1} = \beta_{Weibull}
+$$
+
 Alpha is a shape parameter, controlling the concavity/convexity of the trajectory shape. Alpha >1 indicates a lagged mass loss trajectory (and could more closely align with a non-log linear model), alpha < 1 indicates a leading mass loss trajectory. The negative exponential model is a special case of the Weibull when alpha = 1. 
 
 
@@ -213,7 +239,7 @@ mod_gof <- tidy_fits|>
                                     .default = 0))
 
 tidy_fits|>
-  select(negexp_k, discpar_a, discpar_k1, discpar_k2, weibull_alpha, weibull_beta)|>
+  select(negexp_k, discpar_a, discpar_k1, discpar_k2, discser_a, discser_k1, discser_k2, weibull_alpha, weibull_beta)|>
   pivot_longer(everything(), names_to = "parameter")|>
 ggplot(aes(x = value))+
   geom_density()+
@@ -228,12 +254,31 @@ ggplot(aes(x = value))+
   scale_x_continuous(limits = c(0,2))
 
 tidy_fits|>
-  ggplot(aes(x = discpar_a, y = discpar_k1))+geom_point()+scale_y_log10()+geom_smooth(method = "lm")
-tidy_fits|>
-  ggplot(aes(x = discpar_a, y = discpar_k2))+geom_point()+scale_y_log10()+geom_smooth(method = "lm")
+  select(discser_r, discser_k1, discser_k2)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~parameter, scales = "free")
 
 tidy_fits|>
-  ggplot(aes(x = discpar_k1-discpar_k2))+geom_histogram()
+  select(discser_r)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()
+
+tidy_fits|>
+  select(discser_k1)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()+
+  scale_x_continuous(limits = c(0,2))
+
+tidy_fits|>
+  select(discser_k2)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()
+
 ```
 
 ## Likelihood optimization and the litterfitter package
@@ -241,7 +286,7 @@ We used the litterfitter package, explained extensively in Cornwell and Weedon (
 
 -litterfitter defaults assume timescale of years, which is not generally appropriate for aquatic litter breakdown that tends to proceed much more quickly.
 
-### Example
+### Model Fitting
 litterfitter offers a lot of flexibility in easily fitting models to mass loss data and exploring the output. For now, we will use  time series that are best fit by several different models and represent three broad examples of decay trajectories. 
 
 
@@ -292,9 +337,9 @@ saveRDS(lf_example_fits, here("data/lf_example_fits.Rds"))
 The distributions in these bootstrapped parameters suggest there is some instability, which is not too surprising if we are bootstrapping a relatively small sample where some samples can have particularly high leverage on the overall fit. 
 
 ## Bayesian estimation and brms
-A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure with the analytical models, although somewhat slower particularly if parallelizing the bootstrapping, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unlikely parameters highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be drawn from continuous positive distributions such as the Gamma and lognormal. 
+A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure with the analytical models, although somewhat slower particularly if parallelizing the bootstrapping, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unbelievable parameter values highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be drawn from continuous positive distributions such as the Gamma and lognormal. 
 
-### Analytical models estimated with MCMC
+###  Model Fitting
 
 
 ```{r priors}
@@ -343,7 +388,15 @@ ggplot(data = rlnorm(n = 1000, meanlog = -1, sdlog = 4)|>as_tibble())+geom_densi
 ```
 
 ```{r discser priors}
+# discrete series r
+ggplot(data = rbeta(n = 5000,1,2.5)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
 
+#discser k1 - want mass centered around 0.25, but may need to assume we can get out to about 15
+ggplot(data = rlnorm(n = 1000, meanlog = -2.25, sdlog = 1.5)|>as_tibble())+geom_density(aes(x = value))#+scale_x_continuous(limits = c(0,5))
+
+#discser k2
+ggplot(data = rlnorm(n = 1000, meanlog = -4.5, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
 
 ```
 
@@ -365,14 +418,9 @@ ggplot(data = rlnorm(n = 5000, meanlog = 6, sdlog = 1)|>as_tibble())+geom_densit
 ```
 
 ```{r set up priors and formulae}
-
+# Negative exponential
 k_bf <- bf(mass ~ exp(-k*time), k ~1, nl = TRUE)
 k_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
-
-## Weibull
-weibull_bf <- bf(mass ~ exp(-(time/beta)^alpha), beta + alpha ~1, nl = TRUE)
-weibull_priors <- prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
-  prior(lognormal(5.5,1), nlpar = "beta", lb = 0)
 
 ## Discrete parallel
 discpar_bf <- bf(mass ~ a*exp(-k1 * time) + (1 - a) * exp(-k2 * time),
@@ -380,7 +428,22 @@ discpar_bf <- bf(mass ~ a*exp(-k1 * time) + (1 - a) * exp(-k2 * time),
 
 discpar_priors <- prior(uniform(0,1), nlpar = "a", lb = 0, ub = 1)+
   prior(lognormal(-1,4), nlpar = "k1", lb = 0)+
-  prior(lognormal(-1,4), nlpar = "k2", lb = 0)
+  prior(lognormal(-1,4), nlpar = "k2", lb = 0) # terrible priors
+
+## Discrete series
+discser_bf <- bf(mass ~ (((1 - r)*k1*exp(-k2*time)) - ((k2 - k1*r)*exp(-k1*time)))/(k1 - k2),
+                 r + k1 + k2 ~ 1, nl = TRUE)
+
+discser_priors <- prior(beta(1,2.5), nlpar = "r", lb = 0, ub = 1)+
+  prior(lognormal(-2.25,1.5), nlpar = "k1", lb = 0)+
+  prior(lognormal(-4.5,2), nlpar = "k2", lb = 0)
+
+## Weibull
+weibull_bf <- bf(mass ~ exp(-(time/beta)^alpha), beta + alpha ~1, nl = TRUE)
+weibull_priors <- prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5.5,1), nlpar = "beta", lb = 0)
+
+
 
 #discpar a, k1, and k2 are probably quite correlated
 
@@ -433,38 +496,29 @@ discpar_289_brm <- brm(formula = discpar_bf, prior = discpar_priors,
                  control= list(adapt_delta = 0.99),
                  file = here("data/brms_objects/discpar_289_brm"))
 
+discser_289_brm <- brm(formula = discser_bf, prior = discser_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discser_289_brm"))
 
+pairs(discser_289_brm)
 ```
 
 
 
+## Comparison of 2 boot strap techniques and mcmc
+### Parameter distributions
+```{r brms parameter distributions}
+#tidybayes::
+discser_289_brm
+
+```
 
 
-## Model comparison and model averaging
- Without a principled choice for a model, multiple models may make sense. 
- 
-
-# Interpretation and analysis of fitted models
-# Parameter comparison
--Increasing parameters in data sparse situations increases the likelihood of nonidentifiability. 
--Parameters don't mean the same thing across models, obviously, but they can be relatable. 
--Does propagating uncertainty into the use 
-
-## Beyond parameter comparison: Posterior predictions/simulation
-
-
-
-$$
-k_{\mathrm{app}}(t) = \frac{d \ln{[A(t)]}}{dt} {(Manzoni_\ et_\ al._\ 2012)}
-$$
-This equation implies something quite intuitive - we can get instantaneous breakdown rates (a first order decay constant) for any arbitrary function A(t) by taking the time derivative of the natural log of the function. This also follows from the negative exponential model's derivative (Lecerf book chapter), which is a constant value since its time derivative is linear on the log scale.
-
-- Note that negexp and discrete parallel have analytical solutions for derivatives 
-
-
-- Choice of model matters here: show error estimates with k vs weibull and biexponential parameters - think about both bias and variance in the error
-- Also relevant to demonstrate that Weibull's beta is (probably) useful here as a more reliable default parameter than k, when the data go to 37% mass loss. But still there are cases where something other than Weibull is a better fit and we would do best to propagate error into a model agnostic decay time
-
+### Posterior simulation
+One powerful mode of analysis involves drawing from (MCMC) or simulating (likelihood) a posterior distribution. 
 
 - How to do this with bootstrapping/optim appropriately? Single-fit bootstrapping vs non-parametric bootstrap solution
 Probably need to compare regression estimates from one vs another under different non-linearity situations, and against the Bayesian posterior simulation.
@@ -481,12 +535,37 @@ Optim approach 2: Single fit covariance matrix: Single fit bootstrap
 "The inverse of the negative hessian is an estimator of the asymptotic covariance matrix"
 https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-with-a-hessian-matrix-how-to-calculate-paramet
 
-
 -simulate B parameter sets from the multivariate normal, plug in the parameter values and obtain intervals as the produced distributions
 
-- This is basically what gavin simpson does to get his GAM derivatives
+## Model comparison and model averaging
+ Without a principled choice for a model, multiple models may make sense. 
+ 
 
-## Median residence/transit time, half-life
+# Interpretation and analysis of analytical models
+
+## Parameter comparison
+-Increasing parameters in data sparse situations increases the likelihood of nonidentifiability. 
+-Parameters don't mean the same thing across models, obviously, but they can be relatable. 
+-Does propagating uncertainty into the use of parameters influence our understanding?
+
+
+
+## Calculated quantities: Median residence/transit time, half-life
+
+## Functional analysis with posterior simulations
+
+
+$$
+k_{\mathrm{app}}(t) = \frac{d \ln{[A(t)]}}{dt} {(Manzoni_\ et_\ al._\ 2012)}
+$$
+This equation implies something quite intuitive - we can get instantaneous breakdown rates (a first order decay constant) for any arbitrary function A(t) by taking the time derivative of the natural log of the function. This also follows from the negative exponential model's derivative (Lecerf book chapter), which is a constant value since its time derivative is linear on the log scale.
+
+- Note that negexp and discrete parallel have analytical solutions for derivatives 
+
+
+- Choice of model matters here: show error estimates with k vs weibull and biexponential parameters - think about both bias and variance in the error
+- Also relevant to demonstrate that Weibull's beta is (probably) useful here as a more reliable default parameter than k, when the data go to 37% mass loss. But still there are cases where something other than Weibull is a better fit and we would do best to propagate error into a model agnostic decay time
+
 ## Continuous fragmentation losses
 
 
@@ -510,7 +589,7 @@ What happens when we use k vs k with uncertainty propagated into the analysis
 - Why not just plug in covariates of alpha and beta? 
 - Why not use GAMs? 
 -- GAMs not out-of-the-box constrained to 1 at t = 0 if that is needed. 
--- Litter decomp time series are typically not data rich, but in some cases GAMs will work, particularly if k is set low. In those cases the methods here for posterior estimation of kapp can be used. 
+-- Litter decomp time series are typically not data rich, but in some cases GAMs will work, particularly if k is set low. Shape constrained additive models (scam package)/monotonic constraints can help. In those cases the methods here for posterior estimation of kapp can be used. 
 - Why assume normally distributed error (talking about a process misspecification rather than a distributional misspecification?)
   -- If we specify an Intercept with uncertainty (either estimated or as a latent value) rather than use the functional known of M=1|t=0
   -- Interesting thought: Are we more uncertain about t0.75 than t0.5 just because of errors growing along the function? Does this imply something about needing a link function? 
