@@ -551,6 +551,7 @@ https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-
 
 
 ## Calculated quantities: Median residence/transit time, half-life
+Sarquis and Sierra 2023 do this with median transit times across a couple of models, but don't calculate the error. 
 
 ## Functional analysis with posterior simulations
 
