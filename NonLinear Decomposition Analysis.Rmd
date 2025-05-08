@@ -18,33 +18,32 @@ library(brms)
 ```
 # Introduction
 
-Litter decomposition has broad importance to most ecosystems, leading to an enormous quantity of studies focused on this process through the history of the scientific field of ecology. One of the most common tactics to study litter decomposition is by observing mass loss from cohorts of litter through time, usually in litter bags. The vast majority of studies then analyze these time series by fitting the data to a negative exponential model, using the slope parameter as an indicator of mass loss rates for each cohort and as a metric for comparison across litters of different taxa, chemistry, and environmental conditions. 
+Litter decomposition has broad importance to most ecosystems, leading to an enormous quantity of studies focused on this process through the history of ecology. One of the most common tactics to study litter decomposition is by observing mass loss from cohorts of litter through time, usually in litter bags. The vast majority of studies then analyze these time series by fitting the data to a single pool, negative exponential model, often by simply log-transforming the mass loss data (Adair et al 2010). The slope, k (i.e., breakdown rate or decomposition rate or processing coefficient), condenses mass loss time series into one, time-invariant rate that is easy to analyze and interpret probabilistically in ANCOVA-type analyses or compare within and across studies without error (e.g., when only an initial and final mass are measured or in cross-study syntheses, Follstad Shah et al 2017).
 
-The negative exponential model has been criticized extensively. It has proved incredibly useful as a simple and powerful approximation of decomposition dynamics. As a simple model, however, this approximation can lack precision that may be consequential for decision making or may hinder the exposition of our understanding of litter decomposition. For example... prediction error. Recent analyses have found major drivers of significant deviations from the assumptions of the negative exponential model. Alternative models that allow time-varying decomposition rates often fit data better.
-
-One enduring quality of the negative exponential model is the familiarity of k. It is easily comparable across decomposition time series, so most studies have relied on parameter comparison (of k estimates) to study litter decomposition. In particular, because k is linear, it is simple to include as in linear model approaches such as ANCOVA with environmental or instrinsic litter qualities as covariates. This ease has likely hindered the use and interpretation of alternative models of decomposition that allow time-varying rates of mass loss. Alternative models have varying and greater numbers of parameters than the negative exponential, making synthesis difficult when different model fits are used. A principled choice on a model could be made, and errors could be accepted as is, but there has been little consideration of how to interpret decomposition processes while synthesizing these model fits with the many prior estimates of k.
-
-- Parameters, such as k, are highly model specific. They may also suffer from non-identifiability/equifinality (do the bootstrap distributions/pposterior distributions play this out?)
+This approach has proved incredibly useful as a simple and powerful approximation of decomposition dynamics. At the same time, it has been criticized extensively. Adair et al 2010 show that log transformation and use with ordinary linear (as opposed to nonlinear) regression meaningfully alters error rates as well as biases predictions of mass loss. The functional form assumption of the negative exponential has also been criticized. Geographically broad evidence from both terrestrial (Harmon et al 2009, Cornwell and Weedon 2014) and aquatic (Robbins et al ...) systems suggest time-varying breakdown rates are common, leading to poor precision of negative exponential fits to many decomposition time series. 
 
 
-- Model quantities such as mean/median residence time, half-life. 
+A few time-varying decomposition models represented in the literature flexibly fit the broad array of observed decomposition trajectories (Cornwell and Weedon, Robbins et al 2025). However, these models are rarely used, probably for several reasons. First, k is familiar and has been useful. This has likely created a positive feedback where k is used precisely because it is interpretable in the context of existing literature. Different parameters often will not have meaningful translations across models. Second, flexibility comes at the cost of extra parameters. Whereas the negative exponential has one parameter, other time-varying models have 2 or 3 parameters. This requires more data to justify. Third, given the traditional approach, it is not obvious how to understand and use uncertainty when there are 2 or more parameters to describe a single model fit. Further, multiple parameters may be collinear or structurally unidentifiable, further complicating parameter interpretation even when data are abundant and model fits are good. 
 
-- Posterior predictions of the models themselves can have useful properties. The key here is that drawing from fitted distributions of the parameters can provide relevant error measures to propagate into secondary analysis
+Derived quantities may offer an alternative to a focus on parameter interpretation, particularly in cases where there is no principled model choice. For example, transit times and steady state masses are model agnostic quantities, meaning they retain interpretatation regardless of the model's form. Transit times and steady states are analytically calculable from the parameters in many time-varying decomposition models; however, calculating confidence limits on such quantities is not straightforward, despite having several options (Bolker 2007). Moreover, model predictions enable not only calculation of derived quantities, but also instantaneous breakdown rates ($k_{app}$), apparent decomposition rate) and their uncertainty for arbitrary time points along a decomposition trajectory.
 
-This paper briefly recaps models of mass loss, fitting those models to data in two optimization frameworks, and focuses on the interpretation and synthesis of parameters and quantities from different kinds of model fits. Because litter time series data are typically not data rich, we focus on a data-driven approach where data quantity may be inadequate for more complex machine learning, generalized additive models, or gaussian processes, using analytical models that rely on simple, biologically relevant assumptions to constrain the functional forms of the mass loss. We hope this will serve as a guide for measuring and estimating more time-resolved decomposition time series. The adoption of these alternative models has been slow, particularly in aquatic studies. 
+
+
+
+Improving the use of time-varying models requires exploring how to interpret and use them in light of their uncertainty. This paper briefly recaps models of mass loss, fitting those models to data in two estimation frameworks, and focuses on the interpretation and synthesis of parameters and derived quantities from different kinds of model fits. In practice, analytical decomposition models are rarely treated as hypotheses, but instead as phenomenological representations of mass loss time series..Because litter time series data are typically not data rich, we focus on a data-driven approach where data quantity may be inadequate for more complex machine learning, generalized additive models, or gaussian processes, using analytical models that rely on simple, biologically relevant assumptions to constrain the functional forms of the mass loss. We hope this will serve as a guide for measuring and estimating more time-resolved decomposition time series. The adoption of these alternative models has been slow, particularly in aquatic studies. 
 
 We are motivated by the following questions:
 - Considering the utility of time-varying models, how can litter decomposition mass loss time series be fit to such models? What are the pitfalls to fitting these models with different approaches, such as nonidentifiability?
-- How should we compare fits from time-varying models to make inferences about litter decomposition and its controls?
+- How can we make robust inferences about time-varying litter decomposition and its controls?
 
 
 
-## Models of mass loss
+# Models of mass loss
 
 M is Mt/M0, proportion of mass remaining, as is conventional
 All models here assume normally distributed errors. Other error distributions, such as the Beta and related mixture models, are beyond the scope of this paper.
 
-### Linear, time constant models of mass loss
+## Linear, time constant models of mass loss
 The key thing to note is that these models assume a time-invariant slope.
 - True linear
 $$
@@ -58,8 +57,9 @@ M = e^{-kt}
 $$
 
  For the negative exponential this is interpreted as a time-invariant 'proportional' mass loss. 
+ Adair shows how this model when fit with OLS procedures on log-transformed data alters error
 
-### Non-linear, time varying models of mass loss
+## Non-linear, time varying models of mass loss
 Cornwell and Weedon (2014) and Manzoni et al (2012) explain these models in greater detail. 
 Many examples exist, but two offer a great deal of flexibility to adequately capture the general range of mass loss trajectories observed in most mass loss time series. 
 
@@ -125,9 +125,11 @@ $$
 Alpha is a shape parameter, controlling the concavity/convexity of the trajectory shape. Alpha >1 indicates a lagged mass loss trajectory (and could more closely align with a non-log linear model), alpha < 1 indicates a leading mass loss trajectory. The negative exponential model is a special case of the Weibull when alpha = 1. 
 
 
-# Fitting (non-linear) models of mass loss
-We will present two methods for fitting non-linear (and linear) models to mass loss data: estimating parameters via optimization (XXX of non-linear least squares?) or through Bayesian analysis (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods. We could also linearly interpolate data or use LOESS methods but we are interested in highlighting two methods that are commonly used in probabilistic frameworks where error can be reasonably estimated in the model fits and propagated into model-derived quantities and downstream analysis of model predictions or parameters.
 
+# Fitting (non-linear) models of mass loss
+We will present two methods for fitting non-linear (and linear) models to mass loss data: estimating parameters via optimization (XXX of non-linear least squares?) or through Markov Chain Monte Carlo (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods. We could also linearly interpolate data or use LOESS methods but we are interested in highlighting two methods that are commonly used in probabilistic frameworks where error can be reasonably estimated in the model fits and propagated into model-derived quantities and downstream analysis of model predictions or parameters.
+
+## Example Data
 We will also turn to an existing dataset for example data, the Detrital Nutrients dataset (XXX link, citation). [XXX Data set description]. In particular, we will use a subset of these data that focused on stream litter, and further focus on time series that have number of observations (litter bag retrievals) greater than the number of parameters our models. 
 
 ```{r load Detrital Nutrients}
@@ -281,6 +283,8 @@ ggplot(aes(x = value))+
 
 ```
 
+
+
 ## Likelihood optimization and the litterfitter package
 We used the litterfitter package, explained extensively in Cornwell and Weedon (2014), for the first approach. The litterfitter package minimizes the sum of squares using the L-BFGS-B algorithm, which is equivalent to maximizing the likelihood  under the assumed normally-distributed errors and constant variance. Error around the estimated parameters is estimated by bootstrapping: replicates of the time series are created by sampling with replacement, and then re-fit with the optimization procedure. This creates distributions of parameter values that convey uncertainty in the parameter value or create new predictions from the implied predictions of each parameter set. 
 
@@ -336,7 +340,8 @@ saveRDS(lf_example_fits, here("data/lf_example_fits.Rds"))
 ```
 The distributions in these bootstrapped parameters suggest there is some instability, which is not too surprising if we are bootstrapping a relatively small sample where some samples can have particularly high leverage on the overall fit. 
 
-## Bayesian estimation and brms
+
+## MCMC estimation and brms
 A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure with the analytical models, although somewhat slower particularly if parallelizing the bootstrapping, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unbelievable parameter values highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be drawn from continuous positive distributions such as the Gamma and lognormal. 
 
 ###  Model Fitting
@@ -508,13 +513,18 @@ pairs(discser_289_brm)
 
 
 
-## Comparison of 2 boot strap techniques and mcmc
+
+
+# Comparison of estimation procedures
+How do the parameters and posterior prediction intervals compare across 
+
 ### Parameter distributions
 ```{r brms parameter distributions}
 #tidybayes::
 discser_289_brm
 
 ```
+
 
 
 ### Posterior simulation
@@ -537,11 +547,13 @@ https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-
 
 -simulate B parameter sets from the multivariate normal, plug in the parameter values and obtain intervals as the produced distributions
 
+
 ## Model comparison and model averaging
  Without a principled choice for a model, multiple models may make sense. 
  
 
 # Interpretation and analysis of analytical models
+We here are focused on the following questions:
 
 ## Parameter comparison
 -Increasing parameters in data sparse situations increases the likelihood of nonidentifiability. 
@@ -550,7 +562,7 @@ https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-
 
 
 
-## Calculated quantities: Median residence/transit time, half-life
+## Derived quantities: Median residence/transit time, half-life
 Sarquis and Sierra 2023 do this with median transit times across a couple of models, but don't calculate the error. 
 
 ## Functional analysis with posterior simulations
