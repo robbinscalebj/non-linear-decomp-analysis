@@ -240,9 +240,11 @@ tidy_fits <-
 
 
 ```{r}
-tidy_fits|>
+alpha_by_type <- tidy_fits|>
   ggplot(aes(x = weibull_alpha))+geom_histogram()+
   facet_wrap(mesh.type~species, scales = "free")
+  
+ggsave(alpha_by_type, filename = "coweeta_alpha-by-type.jpeg", height = 8, width = 8)
 
 tidy_fits|>
   filter(weibull_alpha <3)|>
@@ -302,6 +304,7 @@ fit_counts.p <- fit_comparisons|>
 
 fit_counts.p
 
+ggsave(fit_counts.p, filename = "coweeta_parsimony-best-model-counts.jpeg", height = 8, width = 8)
 
 ```
 
@@ -351,6 +354,8 @@ weibulls.p <- ggplot(data = weibull_preds_df|>select(-model)|>filter(weibull_alp
 weibulls.p
 
 weibulls.p + scale_y_log10()
+
+ggsave(weibulls.p, filename = "coweeta_weibull-spaghetti.jpeg", height = 8, width = 8)
 
 ```
 
