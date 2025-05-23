@@ -15,6 +15,8 @@ devtools::load_all("C:/Users/robbi/Documents/litterfitter")
 library(here)
 library(tidyverse)
 library(brms)
+
+source(here("litterfitter_prediction_functions.R"))
 ```
 # Introduction
 
@@ -514,19 +516,48 @@ pairs(discser_289_brm)
 
 
 # Comparison of estimation procedures
-How do the parameters and posterior prediction intervals compare across 
 
-### Parameter distributions
-```{r brms parameter distributions}
-#tidybayes::
-discser_289_brm
+
+
+
+
+### Confidence limits as functions of parameters
+We are often interested in quantities that are not the parameters themselves, but instead functions of the parameters. Although there are many potential solutions, we highlight three that work quite generally and are easy to implement in existing software.
+
+1. Non-parametric bootstrap
+This method uses bootstrapping to create a distribution of plausible fits given the boostrapped data. We create a bootstrapped dataset, pull the best-fit parameter values, and repeat this process a large number of times. This creates a distribution of parameters from which we can calculate confidence limits on either the parameters, expected mean, or derived quantities. Litterfitter already enables this bootstrapping, so it's a matter of extracting the bootstrapped parameter values. ACTUALLY I'M NOT SURE IF THIS IS WHAT LITTERFITTER IS DOING
+
+```{r extract litterfitter parameter distributions}
+blah <- lf_example_fits|>
+  select(cohort_id, negexp_bs, discpar_bs, weibull_bs)
 
 ```
 
+2. Population prediction intervals/single-fit bootstrap
+This method uses the single best fit parameter values with the uncertainty represented by the Hessian matrix. The Hessian, in this case also called the information matrix, represents the likelihood surface for a set of parameters. Inverting the Hessian yields a variance-covariance matrix. We can then draw random samples from a multivariate normal distribution with the maximum likelihood parameters as the mean and the variance-covariance matrix as the variance. 
+
+```{r}
+blah <- lf_example_fits|>
+  select(cohort_id, data, negexp_fit, weibull_fit, discpar_fit)|>
+  mutate(
+    negexp_covar = map(negexp_fit, ~solve(pluck(.x, "optimFit","hessian")/pluck(., "optimFit","value"))),
+    weibull_covar = map(weibull_fit, ~solve(pluck(., "optimFit","hessian")/pluck(., "optimFit","value"))),
+   # discpar_covar = map(discpar_fit, ~solve(pluck(., "optimFit","hessian")/pluck(., "optimFit","value"))))
+    weibull_coef = map(weibull_fit, ~pluck(., "optimFit","par")),
+    negexp_coef = map(negexp_fit, ~pluck(., "optimFit","par")))|>
+  mutate(weibull_betas = pmap(list(..1 = weibull_coef, ..2 = weibull_covar,..3 = data), ~MASS::mvrnorm(100,..1,..2)|>as_tibble()|>rename(beta = "V1", alpha = "V2")|>
+                                mutate(time = list(pluck(..3, "time")))|>
+                                rowwise()|>
+                                mutate(preds = list(predict_weibull(unlist(time), beta, alpha)))))
+
+blah2 <- blah|>select(weibull_betas)|>unnest(time, preds)
+ggplot(blah, aes(x = unlist(time), y = unlist(preds)))+
+  geom_line()
+```
 
 
-### Posterior simulation
-One powerful mode of analysis involves drawing from (MCMC) or simulating (likelihood) a posterior distribution. 
+3. Bayesian posterior simulation
+This method simply draws samples of parameters or expected fits from the posterior distribution. The draws create distributions of plausible parameter values or expected responses.
 
 - How to do this with bootstrapping/optim appropriately? Single-fit bootstrapping vs non-parametric bootstrap solution
 Probably need to compare regression estimates from one vs another under different non-linearity situations, and against the Bayesian posterior simulation.
@@ -545,10 +576,23 @@ https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-
 
 -simulate B parameter sets from the multivariate normal, plug in the parameter values and obtain intervals as the produced distributions
 
+### Parameter distributions
+```{r plot parameter distributions from different methods}
+#tidybayes::
+discser_289_brm
+
+```
+
+### Expected value E[X]
+```{r plot fits from different methods}
+
+
+```
 
 ## Model comparison and model averaging
  Without a principled choice for a model, multiple models may make sense. 
  
+
 
 # Interpretation and analysis of analytical models
 We here are focused on the following questions:
@@ -569,6 +613,7 @@ Sarquis and Sierra 2023 do this with median transit times across a couple of mod
 $$
 k_{\mathrm{app}}(t) = \frac{d \ln{[A(t)]}}{dt} {(Manzoni_\ et_\ al._\ 2012)}
 $$
+
 This equation implies something quite intuitive - we can get instantaneous breakdown rates (a first order decay constant) for any arbitrary function A(t) by taking the time derivative of the natural log of the function. This also follows from the negative exponential model's derivative (Lecerf book chapter), which is a constant value since its time derivative is linear on the log scale.
 
 - Note that negexp and discrete parallel have analytical solutions for derivatives 
