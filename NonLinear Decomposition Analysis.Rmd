@@ -537,22 +537,71 @@ blah <- lf_example_fits|>
 This method uses the single best fit parameter values with the uncertainty represented by the Hessian matrix. The Hessian, in this case also called the information matrix, represents the likelihood surface for a set of parameters. Inverting the Hessian yields a variance-covariance matrix. We can then draw random samples from a multivariate normal distribution with the maximum likelihood parameters as the mean and the variance-covariance matrix as the variance. 
 
 ```{r}
-blah <- lf_example_fits|>
+
+calc_ci <- function(x){solve(pluck(x, "optimFit","hessian")/pluck(x, "optimFit","value"))
+}
+safe_solve <- possibly(calc_ci, "Error")
+
+sim_weibullbetas <- function(coefs, vcov, dat){
+  MASS::mvrnorm(9999, coefs, vcov)|>as_tibble()|>rename(beta = "V1", alpha = "V2")|>
+                                mutate(time = list(seq(min(pluck(dat, "time")), max(pluck(dat, "time")), by = 0.2)))|>
+                                rowwise()|>
+                                mutate(preds = list(predict_weibull(unlist(time), beta, alpha)))
+}
+
+sim_negexpbetas <- function(coefs, vcov, dat){
+  MASS::mvrnorm(100, coefs, vcov)|>as_tibble()|>rename(k = "V1")|>
+                                mutate(time = list(pluck(dat, "time")))|>
+                                rowwise()|>
+                                mutate(preds = list(predict_negexp(unlist(time), k)))
+}
+
+sim_discparbetas <- function(coefs, vcov, dat){
+  MASS::mvrnorm(100, coefs, vcov)|>as_tibble()|>rename(alpha = "V1", k1 = "V2", k2 = "V3")|>
+                                mutate(time = list(pluck(dat, "time")))|>
+                                rowwise()|>
+                                mutate(preds = list(predict_discpar(unlist(time), alpha, k1, k2)))
+}
+safe_simnegexp <- possibly(sim_negexpbetas, "Error")
+safe_simdiscpar <- possibly(sim_discparbetas, "Error")
+safe_simweibull <- possibly(sim_weibullbetas, "Error")
+
+
+
+lf_example_ci <- lf_example_fits|>
   select(cohort_id, data, negexp_fit, weibull_fit, discpar_fit)|>
   mutate(
-    negexp_covar = map(negexp_fit, ~solve(pluck(.x, "optimFit","hessian")/pluck(., "optimFit","value"))),
-    weibull_covar = map(weibull_fit, ~solve(pluck(., "optimFit","hessian")/pluck(., "optimFit","value"))),
-   # discpar_covar = map(discpar_fit, ~solve(pluck(., "optimFit","hessian")/pluck(., "optimFit","value"))))
+    negexp_covar = map(negexp_fit, safe_solve),
+    weibull_covar = map(weibull_fit, safe_solve),
+    discpar_covar = map(discpar_fit, safe_solve),
     weibull_coef = map(weibull_fit, ~pluck(., "optimFit","par")),
-    negexp_coef = map(negexp_fit, ~pluck(., "optimFit","par")))|>
-  mutate(weibull_betas = pmap(list(..1 = weibull_coef, ..2 = weibull_covar,..3 = data), ~MASS::mvrnorm(100,..1,..2)|>as_tibble()|>rename(beta = "V1", alpha = "V2")|>
-                                mutate(time = list(pluck(..3, "time")))|>
-                                rowwise()|>
-                                mutate(preds = list(predict_weibull(unlist(time), beta, alpha)))))
+    negexp_coef = map(negexp_fit, ~pluck(., "optimFit","par")),
+    discpar_coef = map(discpar_fit, ~pluck(., "optimFit","par")))|>
+  mutate(negexp_betas = pmap(list(..1 = negexp_coef, ..2 = negexp_covar,..3 = data), ~safe_simnegexp(..1, ..2, ..3)),
+         discpar_betas = pmap(list(..1 = discpar_coef, ..2 = discpar_covar,..3 = data), ~safe_simdiscpar(..1, ..2, ..3)),
+         weibull_betas = pmap(list(..1 = weibull_coef, ..2 = weibull_covar,..3 = data), ~safe_simweibull(..1, ..2, ..3)))
 
-blah2 <- blah|>select(weibull_betas)|>unnest(time, preds)
-ggplot(blah, aes(x = unlist(time), y = unlist(preds)))+
-  geom_line()
+ 
+
+weibull_plot_data <- lf_example_ci|>
+  filter(cohort_id == 436)|>
+  pluck("weibull_betas", 1)|>
+  unnest(cols = c(time, preds))|>group_by(beta)|>
+  mutate(id = cur_group_id())
+
+weibull_plot_summaries<- weibull_plot_data|>
+  group_by(time)|>
+  summarize(upper = quantile(preds, 0.975),lower = quantile(preds, 0.025), mean = mean(preds))
+  
+ggplot()+
+  #geom_line(data = weibull_plot_data, aes(x = time, y = preds, group = id))+
+  geom_line(data = weibull_plot_summaries, aes(x = time, y = mean), color = "blue")+
+  geom_line(data = weibull_plot_summaries, aes(x = time, y = upper), color = "red", linetype = "dashed")+
+  geom_line(data = weibull_plot_summaries, aes(x = time, y = lower), color = "red",
+            linetype = "dashed")+
+  theme_bw()
+
+
 ```
 
 
