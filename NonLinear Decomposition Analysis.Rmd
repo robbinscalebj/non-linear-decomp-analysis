@@ -6,6 +6,7 @@ date: "2025-03-20"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+options(brms.file_refit = "on_change")
 ```
 
 ```{r libraries}
@@ -35,6 +36,7 @@ Improving the use of time-varying models requires exploring how to interpret and
 We are motivated by the following questions:
 - Considering the utility of time-varying models, how can litter decomposition mass loss time series be fit to such models? What are the pitfalls to fitting these models with different approaches, such as nonidentifiability?
 - How can we make robust inferences about time-varying litter decomposition and its controls?
+- Is one method better than another? Ie is the Hessian estimator often worse than Bayesian? Requires some light simulation - scenarios = autocorrelation, sample size, non-normal noise (how do we start to fit with non gaussian errors?), should we start modeling actual litter masses to better incorporate measurement errors/initial uncertainties?
 
 
 
@@ -450,7 +452,6 @@ weibull_priors <- prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
 
 
 
-#discpar a, k1, and k2 are probably quite correlated
 
 
 ```
@@ -494,6 +495,7 @@ weib_436_brm <- brm(formula = weibull_bf, prior = weibull_priors,
                  file = here("data/brms_objects/weib_436_brm"))
 
 
+
 discpar_289_brm <- brm(formula = discpar_bf, prior = discpar_priors,
                  data = example_series|>filter(cohort_id == 289), 
                  family = "gaussian", 
@@ -501,12 +503,26 @@ discpar_289_brm <- brm(formula = discpar_bf, prior = discpar_priors,
                  control= list(adapt_delta = 0.99),
                  file = here("data/brms_objects/discpar_289_brm"))
 
+discser_118_brm <- brm(formula = discser_bf, prior = discser_priors,
+                 data = example_series|>filter(cohort_id == 118), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discser_118_brm"))
+
 discser_289_brm <- brm(formula = discser_bf, prior = discser_priors,
                  data = example_series|>filter(cohort_id == 289), 
                  family = "gaussian", 
                  iter = 6000, chains = 4, cores = 4, warmup = 2000,
                  control= list(adapt_delta = 0.99),
                  file = here("data/brms_objects/discser_289_brm"))
+
+discser_436_brm <- brm(formula = discser_bf, prior = discser_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discser_436_brm"))
 
 pairs(discser_289_brm)
 ```
@@ -550,14 +566,14 @@ sim_weibullbetas <- function(coefs, vcov, dat){
 }
 
 sim_negexpbetas <- function(coefs, vcov, dat){
-  MASS::mvrnorm(100, coefs, vcov)|>as_tibble()|>rename(k = "V1")|>
+  MASS::mvrnorm(1000, coefs, vcov)|>as_tibble()|>rename(k = "V1")|>
                                 mutate(time = list(pluck(dat, "time")))|>
                                 rowwise()|>
                                 mutate(preds = list(predict_negexp(unlist(time), k)))
 }
 
 sim_discparbetas <- function(coefs, vcov, dat){
-  MASS::mvrnorm(100, coefs, vcov)|>as_tibble()|>rename(alpha = "V1", k1 = "V2", k2 = "V3")|>
+  MASS::mvrnorm(1000, coefs, vcov)|>as_tibble()|>rename(alpha = "V1", k1 = "V2", k2 = "V3")|>
                                 mutate(time = list(pluck(dat, "time")))|>
                                 rowwise()|>
                                 mutate(preds = list(predict_discpar(unlist(time), alpha, k1, k2)))
@@ -599,14 +615,14 @@ ggplot()+
   geom_line(data = weibull_plot_summaries, aes(x = time, y = upper), color = "red", linetype = "dashed")+
   geom_line(data = weibull_plot_summaries, aes(x = time, y = lower), color = "red",
             linetype = "dashed")+
+  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass), alpha = 0.7)+
   theme_bw()
 
 
 ```
 
 
-3. Bayesian posterior simulation
-This method simply draws samples of parameters or expected fits from the posterior distribution. The draws create distributions of plausible parameter values or expected responses.
+
 
 - How to do this with bootstrapping/optim appropriately? Single-fit bootstrapping vs non-parametric bootstrap solution
 Probably need to compare regression estimates from one vs another under different non-linearity situations, and against the Bayesian posterior simulation.
@@ -624,6 +640,35 @@ Optim approach 2: Single fit covariance matrix: Single fit bootstrap
 https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-with-a-hessian-matrix-how-to-calculate-paramet
 
 -simulate B parameter sets from the multivariate normal, plug in the parameter values and obtain intervals as the produced distributions
+
+3. Bayesian posterior simulation
+This method simply draws samples of parameters or expected fits from the posterior distribution. The draws create distributions of plausible parameter values or expected responses.
+
+```{r compile brms predictions}
+
+brms_post_preds <- function(model, ndraws, summarize){
+  
+  pred_grid <- tibble(time = seq(min(model$data$time), max(model$data$time), by = 0.2))
+  
+  if(summarize == FALSE){
+  pred_draws <- tidybayes::add_epred_draws(pred_grid, model, ndraws = ndraws)
+  }else{
+  pred_draws <- tidybayes::add_epred_draws(pred_grid, model, ndraws = ndraws)|>
+    tidybayes::median_qi()
+  }
+  
+  return(pred_draws)
+}
+
+weib_436_brm.post <- brms_post_preds(weib_436_brm, ndraws = 1000, summarize = TRUE)
+
+ggplot()+
+  geom_line(data = weib_436_brm.post, aes(x = time, y = .epred), color = "black")+
+  geom_line(data = weib_436_brm.post, aes(x = time, y = .lower), color = "red", linetype = "dashed")+
+  geom_line(data = weib_436_brm.post, aes(x = time, y = .upper), color = "red", linetype = "dashed")+
+  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass), alpha = 0.7)+
+    theme_bw()
+```
 
 ### Parameter distributions
 ```{r plot parameter distributions from different methods}

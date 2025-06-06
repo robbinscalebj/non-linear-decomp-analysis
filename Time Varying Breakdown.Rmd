@@ -27,7 +27,7 @@ coweeta_df <- read_csv(here("wholestream_breakdown_calculations_timeKexploration
   mutate(mass_prop = pct.mass.remain/100, .before = sample.id)|>
   filter(mass_prop >0)|> #filters out two NAs, one with negative mass remaining
   group_by(year, stream, block, mesh.type, species)|>
-  mutate(cohort_id = cur_group_id(), .before = sample.id)
+  mutate(cohort_id = as_factor(cur_group_id()), .before = sample.id)
 
 length(unique(coweeta_df$cohort_id))
 
@@ -67,7 +67,7 @@ blah <- coweeta_df|>
 # Fit models
 This employs the use of the litterfitter package which optimizes model parameters for fitting non-linear analytical decomposition functions to mass loss data. 
 
-
+## litterfitter approach
 ```{r}
 
 if(file.exists(here("coweeta_litter_fits.rds"))){
@@ -428,6 +428,72 @@ weibull_alpha_bs2 <- weibull_alpha_bs|>
 
 ```
 
+
+## Bayesian approach
+
+```{r formula and priors}
+
+negexpcohort_bf <- bf(mass_prop ~ exp(-k*days.incubated), 
+                      k ~0+cohort_id, nl = TRUE)
+negexpcohort_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
+
+weibullcohort_bf <- bf(mass_prop ~ exp(-((days.incubated)/(beta))^(alpha)), 
+                 beta ~ 0 + cohort_id, alpha ~ 0 + cohort_id, nl = TRUE)
+weibullcohort_priors <- prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5.5,1), nlpar = "beta", lb = 0)
+
+discsercohort_bf <- bf(mass_prop ~ (((1 - r)*k1*exp(-k2*days.incubated)) - ((k2 - k1*r)*exp(-k1*days.incubated)))/(k1 - k2),
+                 r ~ 0 + cohort_id,  k1 ~ 0 + cohort_id, k2 ~ 0+cohort_id, nl = TRUE)
+
+discsercohort_priors <- prior(beta(1,2.5), nlpar = "r", lb = 0, ub = 1)+
+  prior(lognormal(-2.25,1.5), nlpar = "k1", lb = 0)+
+  prior(lognormal(-4.5,2), nlpar = "k2", lb = 0)
+
+
+```
+
+```{r fit brm}
+
+negexpcohort_fits <- brm(formula = negexpcohort_bf, prior = negexpcohort_priors,
+                 data = coweeta_df|>filter(cohort_id %in% c(1,2)), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+
+
+tictoc::tic()
+weibullcohort_fits <- brm(formula = weibullcohort_bf, prior = weibullcohort_priors,
+                 data = coweeta_df|>filter(cohort_id %in% c(1,2)), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+tictoc::toc()
+
+tictoc::tic()
+discsercohort_fits <- brm(formula = discsercohort_bf, prior = discsercohort_priors,
+                 data = coweeta_df|>filter(cohort_id %in% c(1,2)), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+tictoc::toc()
+
+marginaleffects::plot_predictions(negexpcohort_fits, condition = c("days.incubated", "cohort_id"), points = 0.7)
+
+marginaleffects::plot_predictions(test_fits, condition = c("days.incubated"), points = 0.7)
+
+marginaleffects::plot_predictions(weibullcohort_fits, condition = c("days.incubated", "cohort_id"), points = 0.7)
+
+marginaleffects::plot_predictions(discser_fits, condition = c("days.incubated", "cohort_id"), points = 0.7)
+
+```
+
+
+
+
+
+
+
+# Deprecated
 ```{r test plot bs}
 blah <- weibull_alpha_bs|>
   left_join(coweeta_df2|>
