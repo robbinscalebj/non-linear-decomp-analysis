@@ -12,6 +12,7 @@ knitr::opts_knit$set(root.dir = here::here())
 ```{r load packages, echo = FALSE}
 library(tidyverse)
 library(here)
+library(brms)
 library(litterfitter)
 library(ggsci)
 library(doSNOW)
@@ -27,7 +28,11 @@ coweeta_df <- read_csv(here("wholestream_breakdown_calculations_timeKexploration
   mutate(mass_prop = pct.mass.remain/100, .before = sample.id)|>
   filter(mass_prop >0)|> #filters out two NAs, one with negative mass remaining
   group_by(year, stream, block, mesh.type, species)|>
-  mutate(cohort_id = as_factor(cur_group_id()), .before = sample.id)
+  mutate(cohort_id = as_factor(cur_group_id()), .before = sample.id)|>
+  group_by(year, stream, block, species)|>
+  mutate(pair_id = as_factor(cur_group_id()), .before = sample.id)|>
+  group_by(year, stream, block, mesh.type, species, date.deploy, date.collected)|>
+  mutate(sample_rep = row_number(), .before = sample.id)
 
 length(unique(coweeta_df$cohort_id))
 
@@ -360,13 +365,11 @@ ggsave(weibulls.p, filename = "coweeta_weibull-spaghetti.jpeg", height = 8, widt
 ```
 
 ```{r bootstrap alpha}
-
-
-
+tic()
 #set up data
 nested_data <- litter_fits|>
     select(cohort_id, weibull_fit)|>
-    filter(cohort_id %in% seq(1:4))|> #for testing
+    #filter(cohort_id %in% seq(1:4))|> #for testing
     group_by(cohort_id)|> # needs group_by()|>nest() structure... nest_by() doesn't work!
     nest()|>
   ungroup()|>
@@ -412,9 +415,6 @@ weibull_alpha_bs <- foreach(i = 1:nrow(nested_data), .combine = 'rbind', .option
               weibull_beta_dist = list(beta),
               weibull_alpha_025 = qfs[1],
               weibull_alpha_975 =  qfs[2])
-      
-    
-            
    
         }     
 stopCluster(cl)
@@ -423,6 +423,7 @@ weibull_alpha_bs2 <- weibull_alpha_bs|>
   rowwise()|>
   mutate(weibulla_overlap_1 = between(1, weibull_alpha_025,weibull_alpha_975))
 
+toc()
 # save to file
 #weibull_alpha_bs2|>write_csv(file = here("data/derived_data/DetNut_weibullalpha_bootstraps.csv")) 
 
@@ -453,21 +454,35 @@ discsercohort_priors <- prior(beta(1,2.5), nlpar = "r", lb = 0, ub = 1)+
 ```
 
 ```{r fit brm}
-
-negexpcohort_fits <- brm(formula = negexpcohort_bf, prior = negexpcohort_priors,
-                 data = coweeta_df|>filter(cohort_id %in% c(1,2)), 
+ 
+#fit in a few minutes
+negexpcohort_fits_brm <- brm(formula = negexpcohort_bf, prior = negexpcohort_priors,
+                 data = coweeta_df, 
                  family = "gaussian", 
                  iter = 5000, chains = 4, cores = 4, warmup = 2000,
-                 control= list(adapt_delta = 0.99))
+                 control= list(adapt_delta = 0.99), 
+                 file = here("data/brms_objects/negexpcohort_fits_brm"))
 
 
 tictoc::tic()
-weibullcohort_fits <- brm(formula = weibullcohort_bf, prior = weibullcohort_priors,
-                 data = coweeta_df|>filter(cohort_id %in% c(1,2)), 
+weibullcohort_fits_brm <- brm(formula = weibullcohort_bf, prior = weibullcohort_priors,
+                 data = coweeta_df, 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99), 
+                 file = here("data/brms_objects/weibullcohort_fits_brm"))
+tictoc::toc() # about an hour - only 1 divergent transition
+blah <- fixef(weibullcohort_fits_brm)|>as.data.frame()|>rownames_to_column("coef")|>mutate(param = ifelse(str_detect(coef, "alpha"), "alpha", "beta"))|>filter(param == "alpha")
+
+weibull_test <- brm(bf(formula = mass_prop ~ exp(-((days.incubated)/(beta))^(alpha)), 
+                 beta + alpha ~ 1, nl = TRUE), prior = weibullcohort_priors,
+                 data = coweeta_df|>filter(cohort_id == 123), 
                  family = "gaussian", 
                  iter = 5000, chains = 4, cores = 4, warmup = 2000,
                  control= list(adapt_delta = 0.99))
-tictoc::toc()
+
+
+
 
 tictoc::tic()
 discsercohort_fits <- brm(formula = discsercohort_bf, prior = discsercohort_priors,
@@ -479,7 +494,7 @@ tictoc::toc()
 
 marginaleffects::plot_predictions(negexpcohort_fits, condition = c("days.incubated", "cohort_id"), points = 0.7)
 
-marginaleffects::plot_predictions(test_fits, condition = c("days.incubated"), points = 0.7)
+marginaleffects::plot_predictions(weibull_test, condition = c("days.incubated"), points = 0.7)
 
 marginaleffects::plot_predictions(weibullcohort_fits, condition = c("days.incubated", "cohort_id"), points = 0.7)
 
@@ -487,6 +502,113 @@ marginaleffects::plot_predictions(discser_fits, condition = c("days.incubated", 
 
 ```
 
+Maybe what you really need to do here is model the coarse/fine pairs as a mv model... 
+
+```{r pull weibull draws}
+weibull_draws_dat <- coweeta_df|>
+  group_by(cohort_id, mesh.type)|>nest()|>
+  mutate(#final_day = map(data, ~max(.x$days.incubated)), 
+         time_seq = map(data, ~seq(0, max(.x$days.incubated), by = 1)))|>
+  select(-data)|>unnest(cols = c(time_seq))
+
+  weibull_draws <- tidybayes::add_epred_draws(object = weibullcohort_fits_brm, ndraws = 5)
+  
+#loop through time series to create draws objects. 
+
+
+```
+
+
+```{r}
+
+
+#set up nested dataframe
+coweeta_pairs <- coweeta_df|>ungroup()|>
+  filter(species != "WOOD")|>
+  select(pair_id, mesh.type, days.incubated, mass_prop)|>
+  group_by(pair_id)|>nest()|>
+  slice_head(n = 1)
+
+# Set up formulae
+weibullpairs_bf <- bf(mass_prop ~ exp(-((days.incubated)/(beta))^(alpha)), 
+                 beta ~ 0 + mesh.type, alpha ~ 0 + mesh.type, nl = TRUE, 
+                 sigma ~ 0 + mesh.type)
+
+
+# Loop
+test <- coweeta_pairs|>pluck("data", 1)
+
+pairs_fit <- brm(weibullpairs_bf, 
+                 data = test, 
+                 prior = weibullcohort_priors)
+
+test_grid <- expand_grid(days.incubated = seq(0,125, by = 1), mesh.type = c("Coarse", "Fine"))
+
+# Sequence:
+# - 1) Summarize expected value distributions at each point in the grid
+# - 2) Calculate difference and summarize expected value difference at each point in the grid
+# - 3a) calculate instantaneous k for coarse and fine at each point in the grid
+# - 3b) Calculate fragmentation using instantaneous k distros
+
+test_draws <- add_epred_draws(pairs_fit, newdata = test_grid, ndraws = 999)
+
+summarized_draws <- test_draws|>group_by(mesh.type, days.incubated)|>
+  summarize(estimate = mean(.epred), upper95 = quantile(.epred, 0.975), lower95 = quantile(.epred, 0.025))
+
+difference_draws <- test_draws|>ungroup()|>
+  select(mesh.type, days.incubated, .draw, .epred)|>
+  group_by(.draw, mesh.type)|>arrange(days.incubated)|>
+  mutate(logmass = log(.epred),
+         k_app = logmass - lag(logmass))
+
+summarize_F <- difference_draws|>ungroup()|>
+  select(-c(logmass, .epred))|>
+  pivot_wider(names_from = mesh.type, values_from = k_app)|>
+  mutate(lambda_F = Coarse - Fine*exp(Coarse - Fine))|>
+  group_by(days.incubated)|>
+  filter(days.incubated >0)|>
+  summarize(estimate = mean(lambda_F), upper95 = quantile(lambda_F, 0.975), lower95 = quantile(lambda_F, 0.025))
+
+ggplot(summarize_F|>filter(days.incubated > 7))+
+  geom_line(aes(x = days.incubated, y = estimate))+
+  geom_line(aes(x = days.incubated, y = upper95), linetype = "dashed")+
+  geom_line(aes(x = days.incubated, y = lower95), linetype = "dashed")
+
+```
+
+
+```{r}
+
+
+test_preds <- marginaleffects::predictions(pairs_fit, newdata = test_grid)
+
+blah <- comparisons(pairs_fit, variables = "mesh.type", newdata = test_grid)|>filter(mesh.type == "Coarse")
+
+
+
+# what you need here is instantaneous k, so a grid of ln(M) derivatives
+
+
+
+ggplot(test_preds)+
+  geom_line(aes(x = days.incubated, y = estimate, color = mesh.type))+
+  geom_line(aes(x = days.incubated, y = conf.high, color = mesh.type), linetype = "dashed")+
+  geom_line(aes(x = days.incubated, y = conf.low, color = mesh.type), linetype = "dashed")+
+  geom_point(data = test, aes(x = days.incubated, y = mass_prop, color = mesh.type), alpha = 0.8, size = 2.5)+
+  ggsci::scale_color_jco()+
+  theme_bw()
+
+
+
+ggplot(blah)+
+  geom_line(aes(x = days.incubated, y = estimate))+
+  geom_line(aes(x = days.incubated, y = conf.high), linetype = "dashed")+
+  geom_line(aes(x = days.incubated, y = conf.low), linetype = "dashed")+
+  ylab("Fine - Coarse")+
+  theme_bw()
+
+
+```
 
 
 
