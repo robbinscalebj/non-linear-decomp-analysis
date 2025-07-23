@@ -1,0 +1,136 @@
+---
+title: "Notes on Initial Conditions"
+author: "CJR"
+date: "2025-07-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Packages and Data
+```{r load packages, echo = FALSE}
+library(tidyverse)
+library(here)
+library(brms)
+library(tidybayes)
+#library(litterfitter)
+library(ggsci)
+library(doSNOW)
+library(parallel)
+library(foreach)
+source(here("litterfitter_prediction_functions.R"))
+
+```
+
+```{r}
+coweeta_df <- read_csv(here("wholestream_breakdown_calculations_timeKexploration.csv"))|>
+  mutate(mass_prop = pct.mass.remain/100, .before = sample.id)|>
+  filter(mass_prop >0)|> #filters out two NAs, one with negative mass remaining
+  group_by(year, stream, block, mesh.type, species)|>
+  mutate(cohort_id = as_factor(cur_group_id()), .before = sample.id)|>
+  group_by(year, stream, block, species)|>
+  mutate(pair_id = as_factor(cur_group_id()), .before = sample.id)|>
+  group_by(year, stream, block, mesh.type, species, date.deploy, date.collected)|>
+  mutate(sample_rep = row_number(), .before = sample.id)|>
+  rename(afdm_final = "final.afdm.g")
+
+length(unique(coweeta_df$cohort_id))
+
+
+```
+
+```{r formula and priors}
+
+negexpcohort_bf <- bf(mass_prop ~ exp(-k*days.incubated), 
+                      k ~0+cohort_id, nl = TRUE)
+negexpcohort_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
+
+weibullcohort_bf <- bf(mass_prop ~ exp(-((days.incubated)/(beta))^(alpha)), 
+                 beta ~ 0 + cohort_id, alpha ~ 0 + cohort_id, nl = TRUE)
+weibullcohort_priors <- prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5.5,1), nlpar = "beta", lb = 0)
+
+discsercohort_bf <- bf(mass_prop ~ (((1 - r)*k1*exp(-k2*days.incubated)) - ((k2 - k1*r)*exp(-k1*days.incubated)))/(k1 - k2),
+                 r ~ 0 + cohort_id,  k1 ~ 0 + cohort_id, k2 ~ 0+cohort_id, nl = TRUE)
+
+discsercohort_priors <- prior(beta(1,2.5), nlpar = "r", lb = 0, ub = 1)+
+  prior(lognormal(-2.25,1.5), nlpar = "k1", lb = 0)+
+  prior(lognormal(-4.5,2), nlpar = "k2", lb = 0)
+
+
+```
+
+```{r test initial uncertainty}
+
+test_ic_data<-coweeta_df|>filter(cohort_id == 5)|>
+  mutate(mi = init.afdm.g, time = days.incubated)
+
+ggplot(test_ic_data, aes(x = days.incubated, y = afdm_final))+geom_point()
+
+test_ic_bf <- bf(afdm_final ~ init.afdm.g*exp(-k*days.incubated), 
+                      k ~ 1,
+                      nl = TRUE)
+
+testw_ic_bf <- bf(afdm_final ~ init.afdm.g*exp(-((days.incubated)/(beta))^(alpha)), 
+                 beta ~ 1, alpha ~ 1, nl = TRUE)
+
+testw_ic_bf2 <- bf(mass_prop ~ exp(-((days.incubated)/(beta))^(alpha)), 
+                 beta ~ 1, alpha ~ 1, nl = TRUE)
+
+
+
+
+negexpcohort_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
+
+
+test_ic_brm <- brm(formula = test_ic_bf, prior = negexpcohort_priors,
+                 data = test_ic_data, 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+
+testw_ic_brm <- brm(formula = testw_ic_bf, prior = weibullcohort_priors,
+                 data = test_ic_data, 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+
+testw_ic_brm2 <- brm(formula = testw_ic_bf2, prior = weibullcohort_priors,
+                 data = test_ic_data, 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+
+
+blah <- epred_draws(test_ic_brm, newdata = expand_grid(days.incubated = seq(0, max(test_ic_data$days.incubated)), init.afdm.g = test_ic_data$init.afdm.g), ndraws= 999)|>group_by(days.incubated)|>
+  summarize(mean = mean(.epred), upper = quantile(.epred, 0.975), lower = quantile(.epred, 0.025))
+
+blah2 <- epred_draws(testw_ic_brm, newdata = expand_grid(days.incubated = seq(0, max(test_ic_data$days.incubated)), init.afdm.g = mean(test_ic_data$init.afdm.g)),  ndraws= 999)|>group_by(days.incubated)|>
+  summarize(mean = mean(.epred), upper = quantile(.epred, 0.975), lower = quantile(.epred, 0.025))
+
+blah3 <- epred_draws(testw_ic_brm2, newdata = expand_grid(days.incubated = seq(0, max(test_ic_data$days.incubated))),  ndraws= 999)|>group_by(days.incubated)|>
+  summarize(mean = mean(.epred), upper = quantile(.epred, 0.975), lower = quantile(.epred, 0.025))
+
+ggplot(blah)+
+  geom_point(data = test_ic_data, aes(x = days.incubated, y = afdm_final))+
+  geom_point(data = test_ic_data|>mutate(days.incubated =0), aes(x = days.incubated, y = init.afdm.g), color = "red")+
+  geom_line(aes(x = days.incubated, y = mean))+
+  geom_line(aes(x = days.incubated, y = upper), linetype = "dotted")+
+  geom_line(aes(x = days.incubated, y = lower), linetype = "dotted")
+
+ggplot(blah2)+
+  geom_point(data = test_ic_data, aes(x = days.incubated, y = afdm_final))+
+  geom_point(data = test_ic_data|>ungroup()|>summarize(init.afdm.g = mean(init.afdm.g))|>mutate(days.incubated =0), aes(x = days.incubated, y = init.afdm.g), color = "red")+
+  geom_line(aes(x = days.incubated, y = mean))+
+  geom_line(aes(x = days.incubated, y = upper), linetype = "dotted")+
+  geom_line(aes(x = days.incubated, y = lower), linetype = "dotted")
+
+ggplot(blah3)+
+  geom_point(data = test_ic_data, aes(x = days.incubated, y = mass_prop))+
+  #geom_point(data = test_ic_data|>mutate(days.incubated =0), aes(x = days.incubated, y = mass_prop), color = "red")+
+  geom_line(aes(x = days.incubated, y = mean))+
+  geom_line(aes(x = days.incubated, y = upper), linetype = "dotted")+
+  geom_line(aes(x = days.incubated, y = lower), linetype = "dotted")
+
+```

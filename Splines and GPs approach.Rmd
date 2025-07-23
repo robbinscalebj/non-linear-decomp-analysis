@@ -1,0 +1,126 @@
+---
+title: "Splines and GPs approach"
+author: "CJR"
+date: "2025-07-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Caleb: This seems to have worked fairly well with a GAM assuming normally distributed error but a pragmatic choice to weight an initial observation (M = 1, t = 0) by a lot (1e6). Also limited success with gaussian processes - it really doesn't do well with that high of weighting but looked a bit like a crappier GAM even with lower weighting. 
+
+
+```{r cars}
+coweeta_df <- read_csv(here("wholestream_breakdown_calculations_timeKexploration.csv"))|>
+  mutate(mass_prop = pct.mass.remain/100, .before = sample.id)|>
+  filter(mass_prop >0)|> #filters out two NAs, one with negative mass remaining
+  group_by(year, stream, block, mesh.type, species)|>
+  mutate(cohort_id = as_factor(cur_group_id()), .before = sample.id)|>
+  group_by(year, stream, block, species)|>
+  mutate(pair_id = as_factor(cur_group_id()), .before = sample.id)|>
+  group_by(year, stream, block, mesh.type, species, date.deploy, date.collected)|>
+  mutate(sample_rep = row_number(), .before = sample.id)
+```
+
+```{r}
+test_df <- coweeta_df|>ungroup()|>
+  filter(cohort_id == 1)|>
+  mutate(weights = 1)|>
+  add_row(days.incubated = 0, mass_prop = 0.9999, weights = 10)
+
+ggplot(test_df, aes(x = days.incubated, y = mass_prop))+
+  geom_point()
+
+```
+
+
+```{r gp}
+
+
+
+gp_m <- brm(mass_prop ~ gp(days.incubated, k = 4), 
+            data = test_df, family = Beta())
+
+gp_pred_grid <- tibble(days.incubated = seq(0,max(test_df$days.incubated), by = 1))
+
+gp_preds <- gp_pred_grid|>add_epred_draws(gp_m, ndraws = 50)|>
+  group_by(days.incubated)|>
+  summarize(estimate = mean(.epred), upper = quantile(.epred, 0.975), lower = quantile(.epred, 0.025))
+
+```
+
+```{r weighted gp gaussian response}
+
+
+gp_g <- brm(mass_prop|weights(weights) ~ gp(days.incubated, k = 5), 
+            data = test_df)
+
+gp_pred_grid <- tibble(days.incubated = seq(0,max(test_df$days.incubated), by = 1))
+
+gp_gpreds <- gp_pred_grid|>add_epred_draws(gp_g, ndraws = 50)|>
+  group_by(days.incubated)|>
+  summarize(estimate = mean(.epred), upper = quantile(.epred, 0.975), lower = quantile(.epred, 0.025))
+
+ggplot(gp_gpreds)+
+  geom_line(aes(x = days.incubated, y = estimate))+
+  geom_line(aes(x = days.incubated, y = upper), linetype = "dashed")+
+  geom_line(aes(x = days.incubated, y = lower), linetype = "dashed")+
+  geom_point(data = test_df, aes(x = days.incubated, y = mass_prop))
+```
+
+```{r weighted gp beta}
+
+
+gp_m <- brm(mass_prop|weights(weights) ~ gp(days.incubated, k = 4), 
+            data = test_df, family = Beta())
+
+gp_pred_grid <- tibble(days.incubated = seq(0,max(test_df$days.incubated), by = 1))
+
+gp_preds <- gp_pred_grid|>add_epred_draws(gp_m, ndraws = 50)|>
+  group_by(days.incubated)|>
+  summarize(estimate = mean(.epred), upper = quantile(.epred, 0.975), lower = quantile(.epred, 0.025))
+
+ggplot(gp_preds)+
+  geom_line(aes(x = days.incubated, y = estimate))+
+  geom_line(aes(x = days.incubated, y = upper), linetype = "dashed")+
+  geom_line(aes(x = days.incubated, y = lower), linetype = "dashed")+
+  geom_point(data = test_df, aes(x = days.incubated, y = mass_prop))
+```
+
+```{r gaussian gam with weights}
+
+gam_mod <- gam(mass_prop ~ 1 + s(days.incubated, bs = "cr", k = 8), data = test_df, weights = weights)
+
+
+gam_preds <- predict(gam_mod, newdata = gp_pred_grid, se.fit = TRUE)|>as_tibble(column_name = "estimate")|>
+  mutate(fit.upper = fit + se.fit*1.96,
+         fit.lower = fit - se.fit*1.96)|>
+  bind_cols(gp_pred_grid)
+
+ggplot(gam_preds)+
+  geom_line(aes(x = days.incubated, y = fit))+
+  geom_line(aes(x = days.incubated, y = fit.upper), linetype = "dashed")+
+  geom_line(aes(x = days.incubated, y = fit.lower), linetype = "dashed")+
+  geom_point(data = test_df, aes(x = days.incubated, y = mass_prop))
+
+```
+
+```{r beta gam with weights}
+
+gam_bmod <- gam(mass_prop ~ s(days.incubated, bs = "tp", k = 6), data = test_df, family = betar(link = "logit"), weights = weights, method = "REML")
+
+
+gam_bpreds <- predict(gam_bmod, newdata = gp_pred_grid, se.fit = TRUE, type = "response")|>as_tibble(column_name = "estimate")|>
+  mutate(fit.upper = fit + se.fit*1.96,
+         fit.lower = fit - se.fit*1.96)|>
+  bind_cols(gp_pred_grid)
+
+ggplot(gam_bpreds)+
+  geom_line(aes(x = days.incubated, y = fit))+
+  geom_line(aes(x = days.incubated, y = fit.upper), linetype = "dashed")+
+  geom_line(aes(x = days.incubated, y = fit.lower), linetype = "dashed")+
+  geom_point(data = test_df, aes(x = days.incubated, y = mass_prop))
+
+```
+

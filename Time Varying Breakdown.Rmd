@@ -13,7 +13,8 @@ knitr::opts_knit$set(root.dir = here::here())
 library(tidyverse)
 library(here)
 library(brms)
-library(litterfitter)
+library(tidybayes)
+#library(litterfitter)
 library(ggsci)
 library(doSNOW)
 library(parallel)
@@ -32,7 +33,8 @@ coweeta_df <- read_csv(here("wholestream_breakdown_calculations_timeKexploration
   group_by(year, stream, block, species)|>
   mutate(pair_id = as_factor(cur_group_id()), .before = sample.id)|>
   group_by(year, stream, block, mesh.type, species, date.deploy, date.collected)|>
-  mutate(sample_rep = row_number(), .before = sample.id)
+  mutate(sample_rep = row_number(), .before = sample.id)|>
+  rename(afdm_final = "final.afdm.g")
 
 length(unique(coweeta_df$cohort_id))
 
@@ -453,6 +455,8 @@ discsercohort_priors <- prior(beta(1,2.5), nlpar = "r", lb = 0, ub = 1)+
 
 ```
 
+
+
 ```{r fit brm}
  
 #fit in a few minutes
@@ -472,6 +476,9 @@ weibullcohort_fits_brm <- brm(formula = weibullcohort_bf, prior = weibullcohort_
                  control= list(adapt_delta = 0.99), 
                  file = here("data/brms_objects/weibullcohort_fits_brm"))
 tictoc::toc() # about an hour - only 1 divergent transition
+
+weibullcohort_fits_brm<- readRDS(here("data/brms_objects/weibullcohort_fits_brm.Rds"))
+
 blah <- fixef(weibullcohort_fits_brm)|>as.data.frame()|>rownames_to_column("coef")|>mutate(param = ifelse(str_detect(coef, "alpha"), "alpha", "beta"))|>filter(param == "alpha")
 
 weibull_test <- brm(bf(formula = mass_prop ~ exp(-((days.incubated)/(beta))^(alpha)), 
@@ -525,24 +532,217 @@ weibull_draws_dat <- coweeta_df|>
 #set up nested dataframe
 coweeta_pairs <- coweeta_df|>ungroup()|>
   filter(species != "WOOD")|>
-  select(pair_id, mesh.type, days.incubated, mass_prop)|>
-  group_by(pair_id)|>nest()|>
-  slice_head(n = 1)
+  select(pair_id, stream, block, species, year, mesh.type, days.incubated, mass_prop)|>
+  group_by(pair_id)|>nest()|>ungroup()|>
+  arrange(as.numeric(as.character(pair_id)))
+  #slice_head(n = 2)
 
 # Set up formulae
 weibullpairs_bf <- bf(mass_prop ~ exp(-((days.incubated)/(beta))^(alpha)), 
                  beta ~ 0 + mesh.type, alpha ~ 0 + mesh.type, nl = TRUE, 
                  sigma ~ 0 + mesh.type)
 
+path_pref <- "data/coweeta_pairs/weibull_fits/pair_id-"
 
-# Loop
-test <- coweeta_pairs|>pluck("data", 1)
+# Loop and save fits
+tic() # 90+ minutes
+for(i in 1:length(coweeta_pairs$data)) {
+  
+  pair_id <- as.numeric(coweeta_pairs$pair_id[[i]])
+  
+  print(paste0("Fitting series pair_id ", pair_id, " (", i, " of ", length(coweeta_pairs$data), ")"))
+  
+  df <- coweeta_pairs$data[[i]]
+  
+  filename <- paste0(path_pref,pair_id)
+  
 
-pairs_fit <- brm(weibullpairs_bf, 
-                 data = test, 
-                 prior = weibullcohort_priors)
+  brm(weibullpairs_bf, 
+                 data = df, 
+                 prior = weibullcohort_priors,
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99), refresh = 0,
+    file = here(filename))
+  
+}
 
-test_grid <- expand_grid(days.incubated = seq(0,125, by = 1), mesh.type = c("Coarse", "Fine"))
+toc() 
+
+
+```
+
+
+```{r}
+
+# Read files back in to do processing - functions:
+
+#for(i in 1:length(coweeta_pairs$data)) {
+#  assign(paste0("pair_", i, "_fit"),readRDS(here(paste0(path_pref, i, ".Rds"))), envir = #.GlobalEnv)
+#}
+
+new_df <- coweeta_pairs|>
+  filter(pair_id %in% c(1,2,7))|>
+  mutate(summarized_draws = map(pair_id, ~summarize_pair_draws(pair_i = .)))
+         
+summarize_pair_draws <- function(pair_i){
+  
+  fit <-  readRDS(here(paste0(path_pref, pair_i, ".Rds")))
+
+coarse_days <- pluck(fit, "data")|>filter(mesh.type == "Coarse")|>pull(days.incubated)|>max()
+fine_days <- pluck(fit, "data")|>filter(mesh.type == "Fine")|>pull(days.incubated)|>max()
+
+pred_grid <- tibble(days.incubated = seq(0,coarse_days, by = 1),
+                    mesh.type = rep("Coarse", length(days.incubated)))|>
+  bind_rows(tibble(days.incubated = seq(0,fine_days, by = 1),
+                    mesh.type = rep("Fine", length(days.incubated)))
+  )
+
+pred_draws <- add_epred_draws(fit, newdata = pred_grid, ndraws = 999)
+
+summarized_draws <- pred_draws|>group_by(mesh.type, days.incubated)|>
+  summarize(estimate = mean(.epred), 
+            upper95 = quantile(.epred, 0.975), lower95 = quantile(.epred, 0.025),
+            upper90 = quantile(.epred, 0.95), lower90 = quantile(.epred, 0.05),
+            upper68 = quantile(.epred, 0.675), lower68 = quantile(.epred, 0.325))|>
+  mutate(pair_id = as_factor(pair_i))|>
+  left_join(coweeta_df|>group_by(pair_id)|>slice_head(n=1)|>
+              select(mesh.type, pair_id, cohort_id, year, stream, block, species))
+
+
+deriv_draws <- pred_draws|>ungroup()|>
+  select(mesh.type, days.incubated, .draw, .epred)|>
+  group_by(.draw, mesh.type)|>arrange(days.incubated)|>
+  mutate(logmass = log(.epred),
+         k_app = logmass - lag(logmass))
+
+summarized_deriv_draws <- deriv_draws|>
+  filter(days.incubated > 0)|>
+  group_by(mesh.type, days.incubated)|>
+  summarize(estimate = mean(k_app), 
+            upper95 = quantile(k_app, 0.975), lower95 = quantile(k_app, 0.025),
+            upper90 = quantile(k_app, 0.95), lower90 = quantile(k_app, 0.05),
+            upper68 = quantile(k_app, 0.84), lower68 = quantile(k_app, 0.16),
+            sd = sd(k_app))|>
+  mutate(pair_id = as_factor(pair_i))|>
+  left_join(summarized_draws|>select(estimate, mesh.type, days.incubated)|>
+              rename(estimated_mass = "estimate"))|>relocate(estimated_mass, .after = days.incubated)
+
+summarized_F <- deriv_draws|>ungroup()|>
+  select(-c(logmass, .epred))|>
+  pivot_wider(names_from = mesh.type, values_from = k_app)|>
+  mutate(lambda_F = Coarse - Fine*exp(Coarse - Fine))|>
+  group_by(days.incubated)|>
+  filter(days.incubated >0, !is.na(lambda_F))|>
+  summarize(estimate = mean(lambda_F), 
+            upper95 = quantile(lambda_F, 0.975), lower95 = quantile(lambda_F, 0.025),
+            upper90 = quantile(lambda_F, 0.95), lower90 = quantile(lambda_F, 0.05),
+            upper68 = quantile(lambda_F, 0.84), lower68 = quantile(lambda_F, 0.16),
+            sd = sd(lambda_F))|>
+  mutate(pair_id = as_factor(pair_i))|>
+  left_join(coweeta_df|>group_by(pair_id)|>slice_head(n=1)|>
+              select(mesh.type, pair_id, cohort_id, year, stream, block, species))|>
+  left_join(summarized_draws|>select(estimate, mesh.type, days.incubated)|>
+              rename(estimated_mass = "estimate"))|>relocate(estimated_mass, .after = days.incubated)
+
+list("summarized_draws" = summarized_draws,
+     "summarized_deriv_draws" = summarized_deriv_draws,
+     "summarized_F_draws" = summarized_F)
+}
+
+         
+```
+
+```{r plots}
+new_df2 <- new_df|>
+  left_join(coweeta_df|>ungroup()|>select(pair_id, stream, block, species, year)|>group_by(stream, block, species, year)|>slice_head(n= 1))
+
+
+# plot fragmentation rates - start with mean estimates - two spaghetti plots, one for each species showing variation in fragmentation rates through
+
+frags_df <- new_df2|>
+  hoist(summarized_draws, "summarized_F_draws")
+
+ggplot(data, aes(x = days.incu))
+
+```
+
+
+# Deprecated
+```{r}
+
+test_dat <- coweeta_pairs|>filter(pair_id == 7)|>slice_head(n = 1)
+for(i in 1:length(test_dat$data)) {
+
+  print(paste0("Summarizing pair ", i))
+  
+  fit <-  readRDS(here(paste0(path_pref, i, ".Rds")))
+  
+  
+coarse_days <- pluck(fit, "data")|>filter(mesh.type == "Coarse")|>pull(days.incubated)|>max()
+fine_days <- pluck(fit, "data")|>filter(mesh.type == "Fine")|>pull(days.incubated)|>max()
+
+pred_grid <- tibble(days.incubated = seq(0,coarse_days, by = 1),
+                    mesh.type = rep("Coarse", length(days.incubated)))|>
+  bind_rows(tibble(days.incubated = seq(0,fine_days, by = 1),
+                    mesh.type = rep("Fine", length(days.incubated)))
+  )
+
+pred_draws <- add_epred_draws(fit, newdata = pred_grid, ndraws = 999)
+
+summarized_draws <- pred_draws|>group_by(mesh.type, days.incubated)|>
+  summarize(estimate = mean(.epred), upper95 = quantile(.epred, 0.975), lower95 = quantile(.epred, 0.025))|>
+  mutate(pair_id = as_factor(i))|>
+  left_join(coweeta_df|>group_by(pair_id)|>slice_head(n=1)|>
+              select(mesh.type, pair_id, cohort_id, year, stream, block, species))
+
+
+deriv_draws <- pred_draws|>ungroup()|>
+  select(mesh.type, days.incubated, .draw, .epred)|>
+  group_by(.draw, mesh.type)|>arrange(days.incubated)|>
+  mutate(logmass = log(.epred),
+         k_app = logmass - lag(logmass))
+
+deriv_draws_for_csv <- deriv_draws|>
+  mutate(pair_id = as_factor(i))|>
+  left_join(coweeta_df|>group_by(pair_id)|>slice_head(n=1)|>
+              select(mesh.type, pair_id, cohort_id, year, stream, block, species))
+
+summarized_F <- deriv_draws|>ungroup()|>
+  select(-c(logmass, .epred))|>
+  pivot_wider(names_from = mesh.type, values_from = k_app)|>
+  mutate(lambda_F = Coarse - Fine*exp(Coarse - Fine))|>
+  group_by(days.incubated)|>
+  filter(days.incubated >0)|>
+  summarize(estimate = mean(lambda_F), upper95 = quantile(lambda_F, 0.975), lower95 = quantile(lambda_F, 0.025))|>
+  mutate(pair_id = as_factor(i))|>
+  left_join(coweeta_df|>group_by(pair_id)|>slice_head(n=1)|>
+              select(mesh.type, pair_id, cohort_id, year, stream, block, species))
+}
+
+summarized_draws|>write_csv(paste0(here("data/coweeta_pairs/weibull_summarized-epred/fit_"), i, ".csv"))
+
+deriv_draws_for_csv|>write_csv(paste0(here("data/coweeta_pairs/weibull_deriv-epred-draws/fit_"), i, ".csv"))
+
+summarized_F|>write_csv(paste0(here("data/coweeta_pairs/weibull_summarized-F/fit_"), i, ".csv"))
+
+}
+
+```
+
+
+```{r}
+#calculate epred draws on prediction grid
+# Calculate fragmentation rates
+# 
+
+coarse_days <- df|>filter(mesh.type == "Coarse")|>pull(days.incubated)|>max()
+fine_days <- df|>filter(mesh.type == "Fine")|>pull(days.incubated)|>max()
+
+pred_grid <- tibble(days.incubated = seq(0,coarse_days, by = 1),
+                    mesh.type = rep("Coarse", length(days.incubated)))|>
+  bind_rows(tibble(days.incubated = seq(0,fine_days, by = 1),
+                    mesh.type = rep("Fine", length(days.incubated)))
+  )
 
 # Sequence:
 # - 1) Summarize expected value distributions at each point in the grid
@@ -550,9 +750,9 @@ test_grid <- expand_grid(days.incubated = seq(0,125, by = 1), mesh.type = c("Coa
 # - 3a) calculate instantaneous k for coarse and fine at each point in the grid
 # - 3b) Calculate fragmentation using instantaneous k distros
 
-test_draws <- add_epred_draws(pairs_fit, newdata = test_grid, ndraws = 999)
+pred_draws <- add_epred_draws(pairs_fit, newdata = pred_grid, ndraws = 999)
 
-summarized_draws <- test_draws|>group_by(mesh.type, days.incubated)|>
+summarized_draws <- pred_draws|>group_by(mesh.type, days.incubated)|>
   summarize(estimate = mean(.epred), upper95 = quantile(.epred, 0.975), lower95 = quantile(.epred, 0.025))
 
 difference_draws <- test_draws|>ungroup()|>
@@ -615,7 +815,6 @@ ggplot(blah)+
 
 
 
-# Deprecated
 ```{r test plot bs}
 blah <- weibull_alpha_bs|>
   left_join(coweeta_df2|>
