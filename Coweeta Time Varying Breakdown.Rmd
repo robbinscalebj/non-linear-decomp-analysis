@@ -17,7 +17,6 @@ library(tidybayes)
 #library(litterfitter)
 library(ggsci)
 library(doSNOW)
-library(parallel)
 library(foreach)
 source(here("litterfitter_prediction_functions.R"))
 
