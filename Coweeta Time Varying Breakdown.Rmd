@@ -4,6 +4,23 @@ output: html_document
 date: "2025-02-20"
 ---
 
+
+What I would like to do is send an Rmarkdown to Bumpers, Rosemond et al that demonstrates 
+-	Time varying probabilistic model fits
+-	How frequently time-varying models are more parsimonious
+o	Split by litter type/mesh size (color by temperature treatment?)
+-	Use of those fits to compare uncertainty (SD)
+-	Time-varying temperature sensitivity – 2 stage approach
+o	Fit models
+o	Extract instantaneous slopes at ~ 10%, 30%, 50%, and 80% mass loss
+-	Time-varying fragmentation rates – 2 stage approach
+o	Basically just spaghetti plots but could also take similar approach to see if temperature sensitivity of fragmentation rates (overall) or time-varying
+	Single fragmentation rate of Lecerf
+	Average fragmentation rate from time-varying approach (w/ uncertainty)
+	These values with leaching stage removed
+
+
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_knit$set(root.dir = here::here())
