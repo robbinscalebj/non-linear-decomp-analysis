@@ -24,13 +24,13 @@ litter_df <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/he
 Assumption here is that leaching proceeds rapidly (heavily baked into priors) and is followed by biologically dominated decomposition which has a possible lag in mass loss compared to the leaching process due to decomposer growth and colonization.
 
 $$
-\begin{align*}
- M_t &= (1 - r) \cdot \exp(-k_1 \cdot t) + r \cdot \exp\left( -\left( \frac{\max(0,\, t - \frac{\log(0.05)}{k_1})}{\beta} \right)^\alpha \right) \\
+
+M = r \cdot e^{-k_1 \cdot t} + (1 - r) \cdot e^{-(\frac{t}{\beta})^{\alpha}} \\
 r &\sim \mathrm{Beta}(8,\ 1.5) \\
 k_1 &\sim \mathrm{LogNormal}(0.2,\ 0.1) \\
 \alpha &\sim \mathrm{Gamma}(1,\ 0.2) \\
 \beta &\sim \mathrm{LogNormal}(6,\ 1)
-\end{align*}
+
 $$
 Proof of concept
 - COuld calculate weibulls from simulations in Robbins et al 2025: Revisiting k based on Lecerf's publication.
@@ -95,7 +95,7 @@ sweib_289_brm <- brm(formula = sweibull_bf, prior = sweibull_priors,
                  control= list(adapt_delta = 0.99)) #beta here is very poorly estimated because time series too short, for one thing
 
 sweib_436_brm <- brm(formula = sweibull_bf, prior = sweibull_priors,
-                 data = example_series|>filter(cohort_id == 436), 
+                 data = litter_df|>filter(cohort_id == 436), 
                  family = "gaussian", 
                  iter = 6000, chains = 4, cores = 4, warmup = 2000,
                  control= list(adapt_delta = 0.99))
@@ -115,4 +115,43 @@ fmax <- function(x, y){
 ggplot()+
   geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass))+
   geom_line(data = blah, aes(x = time, y = M))
+```
+
+
+```{r}
+SerWeibull <- function(time, r, k1, alpha, beta) {
+
+  M <- r * exp(-k1 * time)  + (1 - r) * exp(-(time / beta)^alpha)
+
+}
+
+sweibull2_bf <- bf(
+  mass ~ r * exp(-k1 * time) + (1 - r) * exp(-(time / beta)^alpha),
+  r + k1 + alpha + beta ~ 1,
+  nl = TRUE
+)
+sweibull2_priors <- prior(beta(8,1.5), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
+  prior(lognormal(0.2,0.1), nlpar = "k1", lb = 0)+ #fractional mass loss where all leaching done (5% leachable remaining) in 2-3 days, with most mass around  
+  prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(6,1), nlpar = "beta", lb = 0)
+
+
+sweib2_436_brm <- brm(formula = sweibull2_bf, prior = sweibull2_priors,
+                 data = litter_df|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+
+sweib2_436_brm
+
+conditional_effects(sweib2_436_brm, "time")
+
+blah<-tibble(time = seq(0,250, by = 1))|>add_epred_draws(sweib2_436_brm,ndraw = 10)|>
+  tidybayes::mean_hdi()
+
+p1 <- ggplot(blah)+
+  geom_line(aes(x = time, y = .epred))+
+  geom_line(aes(x = time, y = .upper), linetype = "dotted")+
+  geom_line(aes(x = time, y = .lower), linetype = "dotted")+
+  geom_point(data = litter_df|>filter(cohort_id == 436), aes(x = time, y = mass))
 ```
