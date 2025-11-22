@@ -4,7 +4,7 @@ output: html_document
 date: "2025-04-25"
 ---
 
-This document is notes on a potential serial leaching-Weibull model of decomposition. This model fits some data quite well. The issue is that posterior prediction is difficult given the use of the fmax() function in the formula, which is apparently a stan function and not in R. Extracting the estimated coefficients and predicting with those is very simple, but getting uncertainty around those predictions is not super easy. 
+This document is notes on a potential serial leaching-Weibull model of decomposition. This model fits some data quite well. This doc is now deprecated
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -20,138 +20,95 @@ litter_df <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/he
   rename(mass = "mass_prop", time = "Meas_Day")
 
 ```
-- Discrete series-Weibull
+
+
+# The Parallel Olsen-Weibull (POW)
+Parallel Negative Exponential - Generalized Exponential
+
+
 Assumption here is that leaching proceeds rapidly (heavily baked into priors) and is followed by biologically dominated decomposition which has a possible lag in mass loss compared to the leaching process due to decomposer growth and colonization.
 
-$$
-
-M = r \cdot e^{-k_1 \cdot t} + (1 - r) \cdot e^{-(\frac{t}{\beta})^{\alpha}} \\
-r &\sim \mathrm{Beta}(8,\ 1.5) \\
-k_1 &\sim \mathrm{LogNormal}(0.2,\ 0.1) \\
-\alpha &\sim \mathrm{Gamma}(1,\ 0.2) \\
-\beta &\sim \mathrm{LogNormal}(6,\ 1)
-
-$$
-Proof of concept
-- COuld calculate weibulls from simulations in Robbins et al 2025: Revisiting k based on Lecerf's publication.
 ```{r}
-r_true     <- 0.8   # Fraction nonleachable pool
-k1_true    <- 0.5  # Leaching rate
-beta_true  <- 120   # Weibull scale
-alpha_true <- 2.5   # Weibull shape
-
-
-serial_weibull <- function(time, r, k1, beta, alpha){
-(1 - r) * exp(-k1 * time) +
-       r * exp(-((pmax(0, time - log(1000)/k1) / beta)^alpha))
-}
-
-serial_leachable <- function(time, r, k1, beta, alpha){
-  (1 - r) * exp(-k1 * time)
-}
-
-serial_nonleachable <- function(time, r, k1, beta, alpha){
-  r * exp(-((pmax(0, time - log(0.05)/k1) / beta)^alpha))
-}
-# Simulate true values
-disc_comb <- tibble(time = seq(0,200, by = 2))|>
-  mutate(M_leachable = serial_leachable(time, r = r_true, k1 = k1_true, beta = beta_true, alpha = alpha_true),
-         M_nonleachable = serial_nonleachable(time, r = r_true, k1 = k1_true, beta = beta_true, alpha = alpha_true),
-         M = M_leachable + M_nonleachable)
-
-
-# Plot
-ggplot(disc_comb, aes(x = time)) +
-  geom_point(aes(y = M), color = "black", size = 1.5, alpha = 0.6) +
-  #geom_line(aes(y = M_true), color = "blue", linewidth = 1.2) +
-  labs(
-    title = "Simulated Serial Decomposition Model with Weibull",
-    y = "Remaining Mass (M)",
-    x = "Time"
-  ) +
-  theme_minimal()
-
-```
-
-```{r}
-## Serial weibull
-
-sweibull_bf <- bf(mass ~ (1 - r) * exp(-k1 * time) + r * exp(-((fmax(0, time - log(0.05)/k1) / beta)^alpha)), 
-                  r + k1 + beta + alpha ~1, nl = TRUE)
-sweibull_priors <- prior(beta(8,1.5), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
-  prior(lognormal(0.2,0.1), nlpar = "k1", lb = 0)+ #fractional mass loss where all leaching done (5% leachable remaining) in 2-3 days, with most mass around  
-  prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
-  prior(lognormal(6,1), nlpar = "beta", lb = 0)
-
-
-```
-
-```{r}
-
-sweib_289_brm <- brm(formula = sweibull_bf, prior = sweibull_priors,
-                 data = example_series|>filter(cohort_id == 289), 
-                 family = "gaussian", 
-                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
-                 control= list(adapt_delta = 0.99)) #beta here is very poorly estimated because time series too short, for one thing
-
-sweib_436_brm <- brm(formula = sweibull_bf, prior = sweibull_priors,
-                 data = litter_df|>filter(cohort_id == 436), 
-                 family = "gaussian", 
-                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
-                 control= list(adapt_delta = 0.99))
-
-blah <- fixef(sweib_436_brm)|>as.data.frame()|>rownames_to_column()|>mutate(rowname = str_remove(rowname, "_Intercept"))|>select(rowname, Estimate)|>
-  pivot_wider(names_from = rowname, values_from = Estimate)|>
-  expand_grid(time = seq(0, max(example_series|>filter(cohort_id == 436)|>select(time)), by = 0.1))|>
-  mutate(M_leachable = serial_leachable(time = time, r = r, k1 = k1, beta = beta, alpha = alpha),
-         M_nonleachable = serial_nonleachable(time, r = r, k1 = k1, beta = beta, alpha = alpha),
-         M = M_leachable + M_nonleachable)
-
-# can we use the R-based packages to predict if we define fmax in R? 
-
-fmax <- function(x, y){
-  max(x, y)
-}
-ggplot()+
-  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass))+
-  geom_line(data = blah, aes(x = time, y = M))
-```
-
-
-```{r}
-SerWeibull <- function(time, r, k1, alpha, beta) {
+pnge_function <- function(time, r, k1, alpha, beta) {
 
   M <- r * exp(-k1 * time)  + (1 - r) * exp(-(time / beta)^alpha)
 
 }
 
-sweibull2_bf <- bf(
+pnge_bf <- bf(
   mass ~ r * exp(-k1 * time) + (1 - r) * exp(-(time / beta)^alpha),
   r + k1 + alpha + beta ~ 1,
   nl = TRUE
 )
-sweibull2_priors <- prior(beta(8,1.5), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
+
+pnge_priors <- prior(beta(8,1.5), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
   prior(lognormal(0.2,0.1), nlpar = "k1", lb = 0)+ #fractional mass loss where all leaching done (5% leachable remaining) in 2-3 days, with most mass around  
   prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
   prior(lognormal(6,1), nlpar = "beta", lb = 0)
 
+pnge2_priors <- prior(beta(8,1.5), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
+  prior(lognormal(0.001,0.5), nlpar = "k1", lb = 0)+  
+  prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(6,1), nlpar = "beta", lb = 0)
 
-sweib2_436_brm <- brm(formula = sweibull2_bf, prior = sweibull2_priors,
+
+```
+
+```{r prior predictive simulation}
+pnge_tib <- tibble(
+  draw = 1:ndraw_pp,
+  r = rbeta(ndraw_pp, 1.5, 8),
+  k1 = rlnorm(ndraw_pp, meanlog = 0.001, sdlog = 1),
+  beta  = rlnorm(ndraw_pp, meanlog = 5, sdlog = 1.5),
+  alpha = rgamma(ndraw_pp, shape = 1, rate = 0.2)
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = pow_function(r = r, beta = beta, alpha = alpha, k1 = k1, time = time))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "pow")
+  #filter(alpha <1)
+
+pnge_tib_sum <- pow_tib|>
+  group_by(time)|>
+  summarize(mean = mean(y), upper = quantile(y, 0.025), lower = quantile(y, 0.975))
+
+ggplot()+
+  geom_line(data=pnge_tib|>group_by(draw)|>slice_sample(n = 5), aes(x = time, y = y, group = draw), alpha = 0.05)+
+  geom_line(data=pnge_tib_sum, aes(x = time, y = mean), alpha = 0.8)+
+  geom_line(data=pnge_tib_sum, aes(x = time, y = upper), alpha = 0.8, linetype = "dashed")+
+  geom_line(data=pnge_tib_sum, aes(x = time, y = lower), alpha = 0.8, linetype = "dashed")+
+  theme_bw()
+
+```
+
+```{r}
+
+
+pnge_436_brm <- brm(formula = pnge_bf, prior = pnge_priors,
                  data = litter_df|>filter(cohort_id == 436), 
                  family = "gaussian", 
                  iter = 6000, chains = 4, cores = 4, warmup = 2000,
                  control= list(adapt_delta = 0.99))
 
-sweib2_436_brm
+pnge_436_brm <- brm(formula = pnge_bf, prior = sweibull3_priors,
+                 data = litter_df|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99))
+
+
 
 conditional_effects(sweib2_436_brm, "time")
 
-blah<-tibble(time = seq(0,250, by = 1))|>add_epred_draws(sweib2_436_brm,ndraw = 10)|>
+blah<-tibble(time = seq(0,250, by = 1))|>add_epred_draws(sweib3_436_brm,ndraws = 1000)|>
   tidybayes::mean_hdi()
 
-p1 <- ggplot(blah)+
+#p1 <- 
+ggplot(blah)+
   geom_line(aes(x = time, y = .epred))+
   geom_line(aes(x = time, y = .upper), linetype = "dotted")+
   geom_line(aes(x = time, y = .lower), linetype = "dotted")+
   geom_point(data = litter_df|>filter(cohort_id == 436), aes(x = time, y = mass))
+  scale_x_continuous(limits = c(0,100))
 ```

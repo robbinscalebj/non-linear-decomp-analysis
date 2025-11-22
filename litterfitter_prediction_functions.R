@@ -26,5 +26,11 @@ predict_weibull <- function(time, beta, alpha){
   exp(-(time/beta)^alpha)
 }
 
+# parallel negative exponential-generalized exponential / discrete parallel olsen-weibull
+pnge_function <- function(time, r, k1, alpha, beta) {
+  
+  r * exp(-k1 * time)  + (1 - r) * exp(-(time / beta)^alpha)
+  
+}
 
 newtimes <- seq(0,300, by = 1)
