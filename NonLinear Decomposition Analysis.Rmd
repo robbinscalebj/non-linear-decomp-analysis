@@ -17,6 +17,7 @@ library(here)
 library(tidyverse)
 library(brms)
 library(marginaleffects)
+library(ggsci)
 
 source(here("litterfitter_prediction_functions.R"))
 ```
@@ -203,11 +204,16 @@ ggplot(example_series, aes(x = time, y = mass))+
 litter_fits <- readRDS(here("DetNut_litter_fits.Rds"))|>
   filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
 
+# These were fit similarr to litter_fits, but more recently - this is the discrete parallel negative exponential-generalized exponential
+nege_fits <- readRDS(here("DetNut_nege_fits.rds"))|>
+  filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
+
 tidy_fits <- 
   litter_fits|>
   mutate(negexp_converge_code = map_dbl(negexp_fit, ~pluck(., "optimFit", "convergence")),
          negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
          negexp_AICc = map_dbl(negexp_fit, ~pluck(., "fitAICc")),
+         negexp_AIC = map_dbl(negexp_fit, ~pluck(., "fitAIC")),
          negexp_logLik = map_dbl(negexp_fit, ~pluck(., "logLik")),
          negexp_BIC = map_dbl(negexp_fit, ~pluck(., "fitBIC")),
          negexp_pred = map(negexp_fit, ~pluck(., "predicted"))
@@ -216,6 +222,7 @@ tidy_fits <-
          weibull_beta = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 1)),
          weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)),
          weibull_AICc = map_dbl(weibull_fit, ~pluck(., "fitAICc")),
+         weibull_AIC = map_dbl(weibull_fit, ~pluck(., "fitAIC")),
          weibull_logLik = map_dbl(weibull_fit, ~pluck(., "logLik")),
          weibull_BIC = map_dbl(weibull_fit, ~pluck(., "fitBIC")),
          weibull_pred = map(weibull_fit, ~pluck(., "predicted"))
@@ -225,6 +232,7 @@ tidy_fits <-
          discpar_k1 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 2)),
          discpar_k2 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 3)),
          discpar_AICc = map_dbl(discpar_fit, ~pluck(., "fitAICc")),
+         discpar_AIC = map_dbl(discpar_fit, ~pluck(., "fitAIC")),
          discpar_logLik = map_dbl(discpar_fit, ~pluck(., "logLik")),
          discpar_BIC = map_dbl(discpar_fit, ~pluck(., "fitBIC")),
          discpar_pred = map(discpar_fit, ~pluck(., "predicted"))
@@ -234,6 +242,7 @@ tidy_fits <-
          discser_k1 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 2)),
          discser_k2 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 3)),
          discser_AICc = map_dbl(discser_fit, ~pluck(., "fitAICc")),
+         discser_AIC = map_dbl(discser_fit, ~pluck(., "fitAIC")),
          discser_logLik = map_dbl(discser_fit, ~pluck(., "logLik")),
          discser_BIC = map_dbl(discser_fit, ~pluck(., "fitBIC")),
          discser_pred = map(discser_fit, ~pluck(., "predicted"))
@@ -242,6 +251,7 @@ tidy_fits <-
          contqual_b = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 1)),
          contqual_a = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 2)),
          contqual_AICc = map_dbl(contqual_fit, ~pluck(., "fitAICc")),
+         contqual_AIC = map_dbl(contqual_fit, ~pluck(., "fitAIC")),
          contqual_logLik = map_dbl(contqual_fit, ~pluck(., "logLik")),
          contqual_BIC = map_dbl(contqual_fit, ~pluck(., "fitBIC")),
          contqual_pred = map(contqual_fit, ~pluck(., "predicted"))
@@ -251,24 +261,253 @@ tidy_fits <-
          negexplim_a = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 2)),
          negexplim_b = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 3)),
          negexplim_AICc = map_dbl(negexplim_fit, ~pluck(., "fitAICc")),
+         negexplim_AIC = map_dbl(negexplim_fit, ~pluck(., "fitAIC")),
          negexplim_logLik = map_dbl(negexplim_fit, ~pluck(., "logLik")),
          negexplim_BIC = map_dbl(negexplim_fit, ~pluck(., "fitBIC")),
          negexplim_pred = map(negexplim_fit, ~pluck(., "predicted"))
   )|>
-  select(-c(negexp_fit, weibull_fit, discser_fit, discpar_fit, contqual_fit, negexplim_fit))
+  left_join(nege_fits|>
+  mutate(nege_converge_code = map_dbl(nege_fit, ~pluck(., "optimFit", "convergence")),
+         nege_r = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 1)),
+         nege_k = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 2)),
+         nege_alpha = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 3)),
+         nege_beta = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 4)),
+         nege_AICc = map_dbl(nege_fit, ~pluck(., "fitAICc")),
+         nege_AIC = map_dbl(nege_fit, ~pluck(., "fitAIC")),
+         nege_logLik = map_dbl(nege_fit, ~pluck(., "logLik")),
+         nege_BIC = map_dbl(nege_fit, ~pluck(., "fitBIC")),
+         nege_pred = map(nege_fit, ~pluck(., "predicted")))
+  )|>
+  select(-c(negexp_fit, weibull_fit, discser_fit, discpar_fit, contqual_fit, negexplim_fit, -nege_fit))
 
 mod_gof <- tidy_fits|>
   #reshape for usability
   select(cohort_id, contains(c("AIC", "AICc", "BIC", "logLik")))|>
   pivot_longer(cols = -c(cohort_id), names_to = c("model", "gof_metric"), names_sep = "_", values_to = "value")|>
-  filter(model %in% c("negexp","discpar","weibull"))|>
+  filter(model %in% c("negexp","discpar","weibull", "nege", "discpar", "discser"))|>
   group_by(cohort_id, gof_metric)|>
   mutate(best_in_cohort = case_when(gof_metric == "logLik" & value == max(value) ~ 1, #select highest when logLik
                                     gof_metric != "logLik" & value == min(value) ~ 1, # select lowest when AIC/BIC
                                     .default = 0))
 
+mod_gof_noweibull <- tidy_fits|>
+  #reshape for usability
+  select(cohort_id, contains(c("AIC", "AICc", "BIC", "logLik")))|>
+  pivot_longer(cols = -c(cohort_id), names_to = c("model", "gof_metric"), names_sep = "_", values_to = "value")|>
+  filter(model %in% c("negexp","discpar", "nege", "discpar", "discser"))|>
+  group_by(cohort_id, gof_metric)|>
+  mutate(best_in_cohort = case_when(gof_metric == "logLik" & value == max(value) ~ 1, #select highest when logLik
+                                    gof_metric != "logLik" & value == min(value) ~ 1, # select lowest when AIC/BIC
+                                    .default = 0))
+
+fit_comparisons <- mod_gof|>
+  filter(best_in_cohort==1)|>
+  group_by(gof_metric, model)|>
+  count()|>
+  ungroup()|>group_by(gof_metric)|>mutate(per = n/sum(n))
+
+fit_comparisons_noweibull <- mod_gof_noweibull|>
+  filter(best_in_cohort==1)|>
+  group_by(gof_metric, model)|>
+  count()|>
+  ungroup()|>group_by(gof_metric)|>mutate(per = n/sum(n))
+
+n_time_series <- length(unique(tidy_fits$cohort_id))
+
+fit_counts.p <- fit_comparisons|>
+  #filter(gof_metric != "logLik")|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser", NegExpGenExp = "nege"))|>
+  ggplot(aes(x = gof_metric, y = n, fill = model), alpha =  1)+
+  geom_bar(stat = "identity")+
+  scale_fill_jco()+
+  scale_y_continuous(breaks = c(0,50,100, n_time_series))+
+  guides(fill = guide_legend("Model"))+
+  xlab("Model Comparison Metric")+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+fit_counts_noweibull.p <- fit_comparisons_noweibull|>
+  #filter(gof_metric != "logLik")|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser", NegExpGenExp = "nege"))|>
+  ggplot(aes(x = gof_metric, y = n, fill = model), alpha =  1)+
+  geom_bar(stat = "identity")+
+  scale_fill_jco()+
+  scale_y_continuous(breaks = c(0,15,30, 50, n_time_series))+
+  guides(fill = guide_legend("Model"))+
+  xlab("Model Comparison Metric")+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+fit_counts.p
+fit_counts_noweibull.p
+
+
+```
+```{r}
+
+
+```
+
+```{r}
+fit_preds <- tidy_fits|>
+  mutate(series_length = map_dbl(negexp_pred, ~length(.)))|> # get length of time series (same across all fits so just picking one set of predictions produced by a fit)
+  relocate(series_length)|>left_join(
+    litter_df|>select(cohort_id, time, Mesh_Size_Category, mass)|>
+      mutate(mesh_cat = case_when(Mesh_Size_Category == "coarse" | Mesh_Size_Category == "fine" | Mesh_Size_Category == "open" ~ Mesh_Size_Category,
+                              Mesh_Size_Category < 1 ~ "fine",
+                              Mesh_Size_Category >= 1 ~ "coarse"))|>
+      group_by(cohort_id)|>
+      mutate(terminal_mass_prop = last(mass),
+             terminal_meas_day = last(time))|>
+      summarize(across(everything(), list))
+  )|>
+  select(-contains("negexplim"))|>
+  select(series_length, time, mass, cohort_id, ends_with("pred"))|>
+  group_by(cohort_id)|>
+  unnest(cols = c(time, mass, negexp_pred, weibull_pred, discser_pred, discpar_pred, contqual_pred, nege_pred))|>
+  ungroup()|>
+  mutate(across(contains("pred"), ~.-mass, .names = "{.col}_error"))
+
+fit_rmse <- fit_preds|>
+  filter(time != 0)|>
+  group_by(cohort_id,series_length)|>
+  summarize(across(ends_with("pred"), ~yardstick::rmse_vec(truth = mass, estimate = .)))|>
+  pivot_longer(cols = contains("pred"), values_to = "rmse", names_to = "model")|>
+  mutate(model = str_remove(model, "_pred"))|>
+  filter(model %in% c("negexp","discpar","weibull", "nege"))
+  
+summed_rmse <- fit_rmse|>
+  filter(model == "weibull")
+quantile(summed_rmse$rmse, probs = c(0,0.9,0.75,0.5,0.25,0.1,0))  
+  
+fit_preds|>
+  filter(time != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~name)
+
+fit_preds|>
+  mutate(series_length_category = case_when(series_length >8 ~ "9+",
+                                            .default = as.character(series_length)))|>
+  filter(time != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value,  color = name))+
+  geom_density()+
+  facet_wrap(.~as_factor(series_length_category))+
+  scale_color_jco()+
+  theme_bw()
+
+
+
+
+rmse_dstr.p <- fit_rmse|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", NegExpGenExp = "nege", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser"))|>
+  ggplot(aes(x = rmse,  color = model))+
+  geom_density(linewidth = 1)+
+  scale_linetype_manual(values = c(5,2,3,4,1))+
+ # facet_wrap(.~as_factor(series_length))+
+  xlab("RMSE (Litter mass proportion)")+
+  ylab("Density")+
+  scale_color_jco()+
+  guides(linetype = "none")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+  
+rmse_dstr.p    
+
+```
+Distribution of errors at t50, etc.
+```{r nege spaghetti plot}
+newpreds_df <- tidy_fits|>
+  rowwise()|>
+  mutate(negexp_newpreds = list(predict_negexp(time = newtimes, k = negexp_k)),
+         discser_newpreds = list(predict_discser(time = newtimes, r = discser_r, k1 = discser_k1, k2 = discser_k2)),
+         discpar_newpreds = list(predict_discpar(time = newtimes, a = discpar_a, k1 = discpar_k1, k2 = discpar_k2)),
+         contqual_newpreds = list(predict_contqual(time = newtimes, a = contqual_a, b = contqual_b)),
+         weibull_newpreds = list(predict_weibull(time = newtimes, beta = weibull_beta, alpha = weibull_alpha)),
+         nege_newpreds = list(pnge_function(time = newtimes, r = nege_r, k = nege_k, beta = nege_beta, alpha = nege_alpha)),
+         )|>
+  select(cohort_id, ends_with("newpreds"))|>
+  mutate(time = list(newtimes))|>
+  group_by(cohort_id)|>
+  unnest(cols = c(time, ends_with("newpreds")))|>
+  pivot_longer(cols = ends_with("newpreds"), values_to = ".pred", names_to = "model")|>
+  mutate(model = str_remove(model, "_newpreds"))
+
+
+preds_all_nege <- litter_df|>select(cohort_id,time)|>
+  left_join(newpreds_df|>filter(model == "nege"))|>
+  left_join(tidy_fits|>select(cohort_id, nege_alpha))
+
+nege_preds_df<-litter_df|>
+  select(cohort_id, time, mass)|>
+  group_by(cohort_id)|>
+  group_modify(~add_row(., time = 0, mass = 1))|>
+  complete(time = full_seq(time, 1))|>
+  left_join(newpreds_df|>filter(model == "nege"))|>left_join(tidy_fits|>select(nege_alpha,cohort_id))
+
+
+nege.p <- ggplot(data = nege_preds_df|>select(-model)|>filter(nege_alpha < 30))+
+  geom_line(aes(x = time, y = .pred, group = cohort_id, color = nege_alpha), alpha = 0.5)+
+  scale_y_continuous(limits = c(0, 1), breaks = c(0,0.25,0.5,0.75,1.0))+
+  scale_x_continuous(limits = c(0,max(preds_all_nege$time)), breaks = c(0,50,100,150,200, max(preds_all_nege$time)))+
+  #scale_color_jco()+
+  scale_color_gradient2(trans = "log", low = "red", mid = "grey", high = "black", breaks = c(0.1,0.3,1,3))+
+  #scale_color_gradient2()+
+  guides(color = guide_colorbar(title = expression(NEGE~alpha)))+
+  xlab("Day")+
+  ylab("Proportional Mass Remaining")+
+  theme_classic()+
+  theme(panel.background = element_rect(fill = "#F7F9F9"),
+        legend.title = element_text(size = 20), legend.text = element_text(size = 16), 
+        legend.position = c(0.9,0.78), legend.background = element_blank())
+nege.p
+nege.p + scale_x_continuous(limits = c(0,20))
+
 tidy_fits|>
-  select(negexp_k, discpar_a, discpar_k1, discpar_k2, discser_a, discser_k1, discser_k2, weibull_alpha, weibull_beta)|>
+  select(cohort_id, nege_alpha, weibull_alpha)|>
+  pivot_longer(cols = -cohort_id, names_to = "model", values_to = "alpha")|>
+  filter(alpha <20)|>
+ggplot()+
+  geom_histogram(aes(x = alpha))+
+  facet_wrap(.~model)
+
+
+tidy_fits|>
+  select(cohort_id, nege_alpha, weibull_alpha)|>
+  mutate(diff = nege_alpha - weibull_alpha)|>
+  filter(diff<5)|>
+ggplot()+
+  geom_histogram(aes(x = diff)) # alpha almost universally increases
+
+ggplot(tidy_fits, aes(x = nege_k, y = nege_r))+geom_point()
+
+
+```
+```{r}
+derp <- nege_fits|>
+  filter(cohort_id == 437)|>
+  pluck("nege_fit")
+
+class(derp)
+```
+
+```{r}
+
+tidy_fits|>
+  select(negexp_k, discpar_a, discpar_k1, discpar_k2, discser_a, discser_k1, discser_k2, weibull_alpha, weibull_beta, nege_r, nege_k, nege_alpha, nege_beta)|>
   pivot_longer(everything(), names_to = "parameter")|>
 ggplot(aes(x = value))+
   geom_density()+
@@ -617,6 +856,11 @@ pnge_priors <- prior(beta(1.5,8), nlpar = "r", lb = 0, ub = 1)+ # makes leachabl
   prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
   prior(lognormal(5,1.5), nlpar = "beta", lb = 0)
 
+pnge_priors2 <- prior(beta(1.5,8), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
+  prior(lognormal(-1,0.5), nlpar = "k1", lb = 0)+ #fractional mass loss where all leaching done (5% leachable remaining) in 2-3 days, with most mass around  
+  prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5,1.5), nlpar = "beta", lb = 0)
+
 pnge_bf <- bf(
   mass ~ r * exp(-k1 * time) + (1 - r) * exp(-(time / beta)^alpha),
   r + k1 + alpha + beta ~ 1,
@@ -712,6 +956,11 @@ pnge_436_brm <- brm(formula = pnge_bf, prior = pnge_priors,
                  iter = 5000, chains = 4, cores = 4, warmup = 2000, 
                  file = here("data/brms_objects/pnge_436_brm"))
 
+pnge_436_brm2 <- brm(formula = pnge_bf, prior = pnge_priors2,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000)
+
 pairs(pnge_436_brm)
 waic(pnge_436_brm,discser_436_brm)
 s289t <- example_series|>filter(cohort_id == 289)|>pull(time)
@@ -733,6 +982,8 @@ pnge_pd_289 <-tibble(time = seq(0,n289, by = 1))|>add_epred_draws(pnge_289_brm,n
   tidybayes::mean_hdi()
 pnge_pd_436 <-tibble(time = seq(0,n436, by = 1))|>add_epred_draws(pnge_436_brm,ndraws = 1000)|>
   tidybayes::mean_hdi()
+pnge2_pd_436 <-tibble(time = seq(0,n436, by = 1))|>add_epred_draws(pnge_436_brm2,ndraws = 1000)|>
+  tidybayes::mean_hdi()
 
 #p1 <- 
 ggplot(pnge_pd_118)+
@@ -746,12 +997,18 @@ ggplot(pnge_pd_289)+
   geom_line(aes(x = time, y = .upper), linetype = "dotted")+
   geom_line(aes(x = time, y = .lower), linetype = "dotted")+
   geom_point(data = litter_df|>filter(cohort_id == 289), aes(x = time, y = mass))
-
 ggplot(pnge_pd_436)+
   geom_line(aes(x = time, y = .epred))+
   geom_line(aes(x = time, y = .upper), linetype = "dotted")+
   geom_line(aes(x = time, y = .lower), linetype = "dotted")+
-  geom_point(data = litter_df|>filter(cohort_id == 436), aes(x = time, y = mass))
+  geom_point(data = litter_df|>filter(cohort_id == 436), aes(x = time, y = mass))+
+  scale_x_continuous(limits = c(0,10))
+ggplot(pnge2_pd_436)+
+  geom_line(aes(x = time, y = .epred))+
+  geom_line(aes(x = time, y = .upper), linetype = "dotted")+
+  geom_line(aes(x = time, y = .lower), linetype = "dotted")+
+  geom_point(data = litter_df|>filter(cohort_id == 436), aes(x = time, y = mass))+
+  scale_x_continuous(limits = c(0,10))
 
 ```
 
