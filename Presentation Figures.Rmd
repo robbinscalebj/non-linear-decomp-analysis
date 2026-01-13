@@ -1,0 +1,45 @@
+---
+title: "Figures for Presentation"
+output: html_document
+date: "2026-01-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+
+mytheme <- theme_bw(base_size = 18)+theme(panel.grid = element_blank(), 
+                                          axis.title = element_text(face = "bold"), axis.text = element_text(face = "bold"))
+```
+
+# Negative exponential model example
+
+```{r}
+ne_df <- tibble(
+  time = c(0, 2, 7, 28, 42),
+  k = rep(0.05, length(time)),
+  mass = exp(-k*time)
+)|>
+  mutate(mass_e = ifelse(time !=0, mass + rnorm(n = n(), mean = 0, sd = 0.15), mass))
+
+ggplot(ne_df)+
+  #geom_point(aes(x = time, y = mass), size = 4)+
+  geom_point(aes(x = time, y = mass_e), color = "blue", size = 4)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  mytheme
+
+ggplot(ne_df)+
+  #geom_point(aes(x = time, y = mass))+
+  geom_point(aes(x = time, y = log(mass_e)), color = "blue", size = 4)+
+  geom_smooth(aes(x = time, y = log(mass_e)),method = "lm", se = FALSE)+
+  xlab("Days")+ylab("Log(Mass remaining proportion)")+
+  mytheme
+```
+
+
+
+# Theoretical arguments 
+Grab Lecerf simulations
+
+
