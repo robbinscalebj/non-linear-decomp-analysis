@@ -1302,6 +1302,38 @@ ggplot(blah$data[[1]], aes(x = time, y = mass))+
 ### Example Analysis
 Calculate t50 with uncertainty for multiples
 
+```{r}
+
+pnge_436_brm <- brm(formula = pnge_bf, prior = pnge_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/pnge_436_brm"))
+
+M_x <- 0.5
+pnge_436_preds <- predictions(pnge_436_brm,
+                              newdata = datagrid(time = \(x) seq(min(x),max(x))))|>
+  get_draws()|>
+  mutate(drawid = as.numeric(drawid))|>
+  filter(drawid %% 10 == 0)|>
+  group_by(rowid)|>
+  mutate(fx_diff = draw - M_x)|>
+  arrange(drawid, time)|>
+  group_by(drawid)|>
+  mutate(sign_change = fx_diff * lag(fx_diff) < 0)|>
+  filter(sign_change | lead(sign_change, default = FALSE))|>
+  mutate(t_xf0 = time + (time - lag(time)) * (-fx_diff) / (fx_diff - lag(fx_diff)))|>
+  filter(!is.na(t_xf0))
+
+ggplot(data = pnge_436_preds, aes(x = t_xf0))+geom_density()
+  
+
+ggplot()+
+  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass))+
+  geom_line(data = pnge_436_preds, aes(x = time, y = estimate))+
+  geom_line(data = pnge_436_preds, aes(x = time, y = conf.low), linetype = "dashed", color = "blue")+
+  geom_line(data = pnge_436_preds, aes(x = time, y = conf.high), linetype = "dashed", color = "blue")
+```
 In cases where models are equivalent fits and nested, does the simpler model provide a tighter estimate?
 
 Only want to do this for data where time series that observe >50% loss.
