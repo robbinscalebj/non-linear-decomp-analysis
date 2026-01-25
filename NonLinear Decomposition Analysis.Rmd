@@ -1194,6 +1194,8 @@ discpar_fits <- nested_litter_df|>
   fit_brm_discpar
 )) 
 toc() #~7 min
+discpar_fits|>
+  saveRDS("C:/Users/Caleb/Box/Temp/discpar_fits.Rds")
 
 count_treedepth_hits <- function(fit) {
   np <- nuts_params(fit)
