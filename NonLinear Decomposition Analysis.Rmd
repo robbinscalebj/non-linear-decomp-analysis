@@ -1315,7 +1315,7 @@ pnge_436_preds <- predictions(pnge_436_brm,
                               newdata = datagrid(time = \(x) seq(min(x),max(x))))|>
   get_draws()|>
   mutate(drawid = as.numeric(drawid))|>
-  filter(drawid %% 10 == 0)|>
+  filter(drawid %% 1 == 0)
   group_by(rowid)|>
   mutate(fx_diff = draw - M_x)|>
   arrange(drawid, time)|>
@@ -1334,6 +1334,9 @@ ggplot()+
   geom_line(data = pnge_436_preds, aes(x = time, y = conf.low), linetype = "dashed", color = "blue")+
   geom_line(data = pnge_436_preds, aes(x = time, y = conf.high), linetype = "dashed", color = "blue")
 ```
+
+
+
 In cases where models are equivalent fits and nested, does the simpler model provide a tighter estimate?
 
 Only want to do this for data where time series that observe >50% loss.
