@@ -1,0 +1,1595 @@
+---
+title: "Non-Linear Mass Loss Analysis"
+output: html_document
+date: "2025-03-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(brms.file_refit = "on_change")
+```
+
+```{r libraries}
+#devtools::load_all("D:/Github_Repos/litterfitter")
+#devtools::load_all("C:/Users/robbi/Documents/litterfitter") 
+
+library(here)
+library(tidyverse)
+library(brms)
+library(marginaleffects)
+library(ggsci)
+
+source(here("litterfitter_prediction_functions.R"))
+```
+
+We are motivated by the following questions:
+- Can derived quantities offer an alternative to parameter inference?
+- Considering the utility of time-varying models, how can litter decomposition mass loss time series be fit to such models? What are the pitfalls to fitting these models with different approaches, such as nonidentifiability?
+- How can we make robust inferences about time-varying litter decomposition and its controls?
+- Is one method better than another? I.e. is the Hessian estimator often worse than Bayesian? Requires some light simulation - scenarios = autocorrelation, sample size, non-normal noise (how do we start to fit with non gaussian errors?), should we start modeling actual litter masses to better incorporate measurement errors/initial uncertainties?
+
+
+
+# Models of mass loss and kapp
+
+M is Mt/M0, proportion of mass remaining, as is conventional
+All models here assume normally distributed errors. Other error distributions, such as the Beta and related mixture models, are beyond the scope of this paper. 
+
+$$
+k_{\mathrm{app}}(t) = \frac{d \ln{[A(t)]}}{dt} {(Manzoni_\ et_\ al._\ 2012)}
+$$
+
+This equation implies something quite intuitive - we can get instantaneous breakdown rates (a first order decay constant) for any arbitrary function A(t) by taking the time derivative of the natural log of the function. This also follows from the negative exponential model's derivative (Lecerf book chapter), which is a constant value since its time derivative is linear on the log scale.
+
+
+## Linear, time constant models of mass loss
+The key thing to note is that these models assume a time-invariant slope.
+- True linear
+$$
+M = -mt
+$$
+This model assumes that mass loss is lost at a linear, non-proportionally declining rate *m*. Lecerf 2021 show that this is actually a time-varying decay rate, though we will not consider it further. 
+
+- Negative exponential (Olson 1963)
+$$
+M = e^{-kt}
+$$
+
+ For the negative exponential this is interpreted as a time-invariant 'proportional' mass loss. 
+ Adair shows how this model when fit with OLS procedures on log-transformed data alters error.
+
+## Non-linear, time varying models of mass loss
+Cornwell and Weedon (2014) and Manzoni et al (2012) explain these models in greater detail. In particular, Manzoni et al. (2012) provide analytical solutions to kapp.
+Many examples exist, but two offer a great deal of flexibility to adequately capture the general range of mass loss trajectories observed in most mass loss time series. 
+
+
+- Discrete series
+$$
+M_t = \frac{(1 - r) k_1 e^{-k_2 t} - (k_2 - k_1 r) e^{-k_1 t}}{k_1 - k_2}
+$$
+Here k1 is a 
+
+The analytical solution for kapp(t) is
+
+$$
+k_{\mathit{app}} = \frac{\alpha k_1 e^{-k_1 t} + (1 - \alpha) k_2 e^{-k_2 t}}{\alpha e^{-k_1 t} + (1 - \alpha) e^{-k_2 t}}
+$$
+```{r}
+kapp_discser <- function(alpha, k1, k2, time){
+  
+  (alpha*k1*exp(-k1 * time) + (1 - alpha)*k2*exp(-k2 * time)) /
+    (alpha * exp(-k1*time) + (1 - alpha)*exp(-k2*time))
+
+}
+
+```
+
+```{r}
+predict_discser <- function(time, r, k1, k2){
+  (((1 - r)*k1*exp(-k2*time)) - ((k2 - k1*r)*exp(-k1*time)))/(k1 - k2)
+}
+
+discser_sims <- expand_grid(time = seq(0,1000, by = 1),
+                            r = c(0.05,0.15,0.25),
+                            k1 = c(0.01,0.05,0.2),
+                            k2 = c(0.001,0.005,0.01)
+                       )|>
+  mutate(mass = predict_discser(time, r, k1, k2))|>
+  mutate(across(c(r,k1,k2), as_factor))
+
+ggplot(discser_sims, aes(x = time, y = mass, color = r))+
+  geom_line()+
+  facet_wrap(k1~k2)
+```
+
+- Discrete parallel (AKA, bi- or double- exponential))
+$$
+M_t = \alpha e^{-k_1 t} + (1 - \alpha) e^{-k_2 t}
+$$
+$$
+k_{\mathit{app}} = k_1  \frac{(1 - r) k_2 e^{k_1 t} - (k_2 - k_1 r) e^{k_2 t}}{(1 - r) k_1 e^{k_1 t} - (k_2 - k_1 r) e^{k_2 t}}
+$$
+
+```{r}
+predict_discpar <- function(time, a, k1, k2){
+  a * exp(-k1 * time) + (1 - a) * exp(-k2 * time)
+}
+
+discpar_sims <- expand_grid(time = seq(0,1000, by = 1),
+                            a = c(0.75,0.5,0.25),
+                            k1 = c(0.0001,0.01),
+                            k2 = c(0.01,0.1,0.5)
+                       )|>
+  mutate(mass = predict_discpar(time, a, k1, k2))|>
+  mutate(across(c(a,k1,k2), as_factor))
+
+ggplot(discpar_sims, aes(x = time, y = mass, color = a))+
+  geom_line()+
+  facet_wrap(k1~k2)
+```
+Should really do a decent job of understanding k2 here - I thought erroneously that this would always be smaller than k1 on a leading trajectory but I was wrong. Has important implications for how to interpret k2 vs k1 (which appears to be conventional as k), e.g., with 'correcting' curves for leaching and then estimating Arrhenius temperature sensitivity - is this valid?
+- Note here that k2 is the labile fraction
+
+- Weibull (aka Weibull residence)
+$$
+M_t = e^{-\left( \frac{t}{\beta} \right)^\alpha}
+$$
+Beta is essentially a rate parameter interpretable as the time it takes to reach exp(-1) mass. We can call this, then 
+$$
+t_{1/e} = \beta_{Weibull}\ or\ t_{e^-1} = \beta_{Weibull}
+$$
+This parameter itself then has useful properties, but we will examine this later in comparison to derived quantities. 
+
+Alpha is a shape parameter, controlling the concavity/convexity of the trajectory shape. Alpha >1 indicates a lagged mass loss trajectory (and could more closely align with a non-log linear model), alpha < 1 indicates a leading mass loss trajectory. The negative exponential model is a special case of the Weibull when alpha = 1. 
+
+
+The analytical solution to kapp for the Weibull model is 
+$$
+k_{\mathit{app}} = \frac{\alpha}{\beta} \left( \frac{t}{\beta} \right)^{\alpha - 1}
+$$
+
+```{r}
+kapp_weibull <- function(alpha, beta, time){
+  kapp = (alpha/beta)*(time/beta)^(alpha-1)
+}
+```
+
+- Parallel Negative-Generalized Exponential
+The parallel negative-generalized exponential (PNGE) model is a substitution of the Weibull model (a generalized exponential equation) into the slow decomposing fraction of the discrete parallel model, enabling modeling of a rapid leaching phase followed by constant rate, accelerating, or decelerating decomposition. The parameters retain some interpretability, with k being the constant rate of decay describing a rapidly leachable fraction of mass (r) upon inundation. Beta is the inverse time to 1/e mass remaining (of the non-leachable fraction, 1-r), and alpha the shape parameter of the mass loss for the non-leachable fraction.
+
+$$
+M_t = r \, e^{-k t} + (1 - r)\, e^{-\left(\frac{t}{\beta}\right)^{\alpha}}
+$$
+
+
+# Fitting (non-linear) models of mass loss
+ We will fit non-linear models to mass loss data using two frameworks, estimating parameters via optimization (XXX of non-linear least squares?) and through Markov Chain Monte Carlo (MCMC). These methods are of course also suitable for linear functions that can easily be fit through simple OLS methods. We could also linearly interpolate data or use LOESS methods but we are interested in highlighting two methods that are commonly used in probabilistic frameworks where error can be reasonably estimated in the model fits and propagated into model-derived quantities and downstream analysis of model predictions or parameters.
+
+## Example Data
+We will also turn to an existing dataset for example data, the Detrital Nutrients dataset (XXX link, citation). [XXX Data set description]. In particular, we will use a subset of these data that focused on stream litter, and further focus on time series that have number of observations (litter bag retrievals) greater than the number of parameters in the time-varying models. 
+
+```{r load Detrital Nutrients}
+litter_df <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/heads/main/data/derived_data/tidied_detrital_nutrients_data.csv")|> # tidied litter time series
+  mutate(mass_prop = Mass_per_remaining/100)|>
+  group_by(cohort_id)|>
+  mutate(series_length = n())|>
+  ungroup()|>
+  filter(series_length > 5)|>
+  rename(mass = "mass_prop", time = "Meas_Day")
+
+
+litter_df|>
+  group_by(cohort_id)|>
+  arrange(cohort_id, desc(mass))|>
+  slice_tail(n = 1)|>
+  ggplot(aes(x = mass))+geom_histogram(bins = 15)+xlab("Final Mass Proportion")
+
+```
+
+`r length(unique(litter_df$cohort_id))` time series have at least 5 observations/retrievals during decomposition, with the final masses for the time series usually <40% remaining.
+
+Examples:
+Series 436 - lagged trajectory, Weibull best by each model GOF/parsimony estimator
+Series 289 - leading trajectory, Weibull barely best model but discrete parallel also very good 
+Series 118 - Constant variance, k is very good here
+
+```{r define example time series}
+example_series <- litter_df|>
+  filter(cohort_id %in% c(118,289,436))
+
+ggplot(example_series, aes(x = time, y = mass))+
+  geom_point()+
+  facet_wrap(.~cohort_id)+
+  scale_y_continuous(trans = "log")
+
+```
+
+
+
+```{r parameter value distributions in Detrital Nutrients}
+# load litter fits
+# These were fit according to Robbins et al. (2025)
+litter_fits <- readRDS(here("DetNut_litter_fits.Rds"))|>
+  filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
+
+# These were fit similarr to litter_fits, but more recently - this is the discrete parallel negative exponential-generalized exponential
+nege_fits <- readRDS(here("DetNut_nege_fits.rds"))|>
+  filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
+
+tidy_fits <- 
+  litter_fits|>
+  mutate(negexp_converge_code = map_dbl(negexp_fit, ~pluck(., "optimFit", "convergence")),
+         negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc = map_dbl(negexp_fit, ~pluck(., "fitAICc")),
+         negexp_AIC = map_dbl(negexp_fit, ~pluck(., "fitAIC")),
+         negexp_logLik = map_dbl(negexp_fit, ~pluck(., "logLik")),
+         negexp_BIC = map_dbl(negexp_fit, ~pluck(., "fitBIC")),
+         negexp_pred = map(negexp_fit, ~pluck(., "predicted"))
+  )|>
+  mutate(weibull_converge_code = map_dbl(weibull_fit, ~pluck(., "optimFit", "convergence")),
+         weibull_beta = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 1)),
+         weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)),
+         weibull_AICc = map_dbl(weibull_fit, ~pluck(., "fitAICc")),
+         weibull_AIC = map_dbl(weibull_fit, ~pluck(., "fitAIC")),
+         weibull_logLik = map_dbl(weibull_fit, ~pluck(., "logLik")),
+         weibull_BIC = map_dbl(weibull_fit, ~pluck(., "fitBIC")),
+         weibull_pred = map(weibull_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(discpar_converge_code = map_dbl(discpar_fit, ~pluck(., "optimFit", "convergence")),
+         discpar_a = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 1)),
+         discpar_k1 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 2)),
+         discpar_k2 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 3)),
+         discpar_AICc = map_dbl(discpar_fit, ~pluck(., "fitAICc")),
+         discpar_AIC = map_dbl(discpar_fit, ~pluck(., "fitAIC")),
+         discpar_logLik = map_dbl(discpar_fit, ~pluck(., "logLik")),
+         discpar_BIC = map_dbl(discpar_fit, ~pluck(., "fitBIC")),
+         discpar_pred = map(discpar_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(discser_converge_code = map_dbl(discser_fit, ~pluck(., "optimFit", "convergence")),
+         discser_r = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 1)),
+         discser_k1 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 2)),
+         discser_k2 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 3)),
+         discser_AICc = map_dbl(discser_fit, ~pluck(., "fitAICc")),
+         discser_AIC = map_dbl(discser_fit, ~pluck(., "fitAIC")),
+         discser_logLik = map_dbl(discser_fit, ~pluck(., "logLik")),
+         discser_BIC = map_dbl(discser_fit, ~pluck(., "fitBIC")),
+         discser_pred = map(discser_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(contqual_converge_code = map_dbl(contqual_fit, ~pluck(., "optimFit", "convergence")),
+         contqual_b = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 1)),
+         contqual_a = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 2)),
+         contqual_AICc = map_dbl(contqual_fit, ~pluck(., "fitAICc")),
+         contqual_AIC = map_dbl(contqual_fit, ~pluck(., "fitAIC")),
+         contqual_logLik = map_dbl(contqual_fit, ~pluck(., "logLik")),
+         contqual_BIC = map_dbl(contqual_fit, ~pluck(., "fitBIC")),
+         contqual_pred = map(contqual_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(negexplim_converge_code = map_dbl(negexplim_fit, ~pluck(., "optimFit", "convergence")),
+         negexplim_k = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 1)),
+         negexplim_a = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 2)),
+         negexplim_b = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 3)),
+         negexplim_AICc = map_dbl(negexplim_fit, ~pluck(., "fitAICc")),
+         negexplim_AIC = map_dbl(negexplim_fit, ~pluck(., "fitAIC")),
+         negexplim_logLik = map_dbl(negexplim_fit, ~pluck(., "logLik")),
+         negexplim_BIC = map_dbl(negexplim_fit, ~pluck(., "fitBIC")),
+         negexplim_pred = map(negexplim_fit, ~pluck(., "predicted"))
+  )|>
+  left_join(nege_fits|>
+  mutate(nege_converge_code = map_dbl(nege_fit, ~pluck(., "optimFit", "convergence")),
+         nege_r = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 1)),
+         nege_k = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 2)),
+         nege_alpha = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 3)),
+         nege_beta = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 4)),
+         nege_AICc = map_dbl(nege_fit, ~pluck(., "fitAICc")),
+         nege_AIC = map_dbl(nege_fit, ~pluck(., "fitAIC")),
+         nege_logLik = map_dbl(nege_fit, ~pluck(., "logLik")),
+         nege_BIC = map_dbl(nege_fit, ~pluck(., "fitBIC")),
+         nege_pred = map(nege_fit, ~pluck(., "predicted")))
+  )|>
+  select(-c(negexp_fit, weibull_fit, discser_fit, discpar_fit, contqual_fit, negexplim_fit, -nege_fit))
+
+mod_gof <- tidy_fits|>
+  #reshape for usability
+  select(cohort_id, contains(c("AIC", "AICc", "BIC", "logLik")))|>
+  pivot_longer(cols = -c(cohort_id), names_to = c("model", "gof_metric"), names_sep = "_", values_to = "value")|>
+  filter(model %in% c("negexp","discpar","weibull", "nege", "discpar", "discser"))|>
+  group_by(cohort_id, gof_metric)|>
+  mutate(best_in_cohort = case_when(gof_metric == "logLik" & value == max(value) ~ 1, #select highest when logLik
+                                    gof_metric != "logLik" & value == min(value) ~ 1, # select lowest when AIC/BIC
+                                    .default = 0))
+
+mod_gof_noweibull <- tidy_fits|>
+  #reshape for usability
+  select(cohort_id, contains(c("AIC", "AICc", "BIC", "logLik")))|>
+  pivot_longer(cols = -c(cohort_id), names_to = c("model", "gof_metric"), names_sep = "_", values_to = "value")|>
+  filter(model %in% c("negexp","discpar", "nege", "discpar", "discser"))|>
+  group_by(cohort_id, gof_metric)|>
+  mutate(best_in_cohort = case_when(gof_metric == "logLik" & value == max(value) ~ 1, #select highest when logLik
+                                    gof_metric != "logLik" & value == min(value) ~ 1, # select lowest when AIC/BIC
+                                    .default = 0))
+
+fit_comparisons <- mod_gof|>
+  filter(best_in_cohort==1)|>
+  group_by(gof_metric, model)|>
+  count()|>
+  ungroup()|>group_by(gof_metric)|>mutate(per = n/sum(n))
+
+fit_comparisons_noweibull <- mod_gof_noweibull|>
+  filter(best_in_cohort==1)|>
+  group_by(gof_metric, model)|>
+  count()|>
+  ungroup()|>group_by(gof_metric)|>mutate(per = n/sum(n))
+
+n_time_series <- length(unique(tidy_fits$cohort_id))
+
+fit_counts.p <- fit_comparisons|>
+  #filter(gof_metric != "logLik")|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser", NegExpGenExp = "nege"))|>
+  ggplot(aes(x = gof_metric, y = n, fill = model), alpha =  1)+
+  geom_bar(stat = "identity")+
+  scale_fill_jco()+
+  scale_y_continuous(breaks = c(0,50,100, n_time_series))+
+  guides(fill = guide_legend("Model"))+
+  xlab("Model Comparison Metric")+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+fit_counts_noweibull.p <- fit_comparisons_noweibull|>
+  #filter(gof_metric != "logLik")|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser", NegExpGenExp = "nege"))|>
+  ggplot(aes(x = gof_metric, y = n, fill = model), alpha =  1)+
+  geom_bar(stat = "identity")+
+  scale_fill_jco()+
+  scale_y_continuous(breaks = c(0,15,30, 50, n_time_series))+
+  guides(fill = guide_legend("Model"))+
+  xlab("Model Comparison Metric")+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+fit_counts.p
+fit_counts_noweibull.p
+
+
+```
+
+
+```{r}
+fit_preds <- tidy_fits|>
+  mutate(series_length = map_dbl(negexp_pred, ~length(.)))|> # get length of time series (same across all fits so just picking one set of predictions produced by a fit)
+  relocate(series_length)|>left_join(
+    litter_df|>select(cohort_id, time, Mesh_Size_Category, mass)|>
+      mutate(mesh_cat = case_when(Mesh_Size_Category == "coarse" | Mesh_Size_Category == "fine" | Mesh_Size_Category == "open" ~ Mesh_Size_Category,
+                              Mesh_Size_Category < 1 ~ "fine",
+                              Mesh_Size_Category >= 1 ~ "coarse"))|>
+      group_by(cohort_id)|>
+      mutate(terminal_mass_prop = last(mass),
+             terminal_meas_day = last(time))|>
+      summarize(across(everything(), list))
+  )|>
+  select(-contains("negexplim"))|>
+  select(series_length, time, mass, cohort_id, ends_with("pred"))|>
+  group_by(cohort_id)|>
+  unnest(cols = c(time, mass, negexp_pred, weibull_pred, discser_pred, discpar_pred, contqual_pred, nege_pred))|>
+  ungroup()|>
+  mutate(across(contains("pred"), ~.-mass, .names = "{.col}_error"))
+
+fit_rmse <- fit_preds|>
+  filter(time != 0)|>
+  group_by(cohort_id,series_length)|>
+  summarize(across(ends_with("pred"), ~yardstick::rmse_vec(truth = mass, estimate = .)))|>
+  pivot_longer(cols = contains("pred"), values_to = "rmse", names_to = "model")|>
+  mutate(model = str_remove(model, "_pred"))|>
+  filter(model %in% c("negexp","discpar","weibull", "nege"))
+  
+summed_rmse <- fit_rmse|>
+  filter(model == "weibull")
+quantile(summed_rmse$rmse, probs = c(0,0.9,0.75,0.5,0.25,0.1,0))  
+  
+fit_preds|>
+  filter(time != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~name)
+
+fit_preds|>
+  mutate(series_length_category = case_when(series_length >8 ~ "9+",
+                                            .default = as.character(series_length)))|>
+  filter(time != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value,  color = name))+
+  geom_density()+
+  facet_wrap(.~as_factor(series_length_category))+
+  scale_color_jco()+
+  theme_bw()
+
+
+
+
+rmse_dstr.p <- fit_rmse|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", NegExpGenExp = "nege", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser"))|>
+  ggplot(aes(x = rmse,  color = model))+
+  geom_density(linewidth = 1)+
+  scale_linetype_manual(values = c(5,2,3,4,1))+
+ # facet_wrap(.~as_factor(series_length))+
+  xlab("RMSE (Litter mass proportion)")+
+  ylab("Density")+
+  scale_color_jco()+
+  guides(linetype = "none")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+  
+rmse_dstr.p    
+
+```
+Distribution of errors at t50, etc.
+```{r nege spaghetti plot}
+newpreds_df <- tidy_fits|>
+  rowwise()|>
+  mutate(negexp_newpreds = list(predict_negexp(time = newtimes, k = negexp_k)),
+         discser_newpreds = list(predict_discser(time = newtimes, r = discser_r, k1 = discser_k1, k2 = discser_k2)),
+         discpar_newpreds = list(predict_discpar(time = newtimes, a = discpar_a, k1 = discpar_k1, k2 = discpar_k2)),
+         contqual_newpreds = list(predict_contqual(time = newtimes, a = contqual_a, b = contqual_b)),
+         weibull_newpreds = list(predict_weibull(time = newtimes, beta = weibull_beta, alpha = weibull_alpha)),
+         nege_newpreds = list(pnge_function(time = newtimes, r = nege_r, k = nege_k, beta = nege_beta, alpha = nege_alpha)),
+         )|>
+  select(cohort_id, ends_with("newpreds"))|>
+  mutate(time = list(newtimes))|>
+  group_by(cohort_id)|>
+  unnest(cols = c(time, ends_with("newpreds")))|>
+  pivot_longer(cols = ends_with("newpreds"), values_to = ".pred", names_to = "model")|>
+  mutate(model = str_remove(model, "_newpreds"))
+
+
+preds_all_nege <- litter_df|>select(cohort_id,time)|>
+  left_join(newpreds_df|>filter(model == "nege"))|>
+  left_join(tidy_fits|>select(cohort_id, nege_alpha))
+
+nege_preds_df<-litter_df|>
+  select(cohort_id, time, mass)|>
+  group_by(cohort_id)|>
+  group_modify(~add_row(., time = 0, mass = 1))|>
+  complete(time = full_seq(time, 1))|>
+  left_join(newpreds_df|>filter(model == "nege"))|>left_join(tidy_fits|>select(nege_alpha,cohort_id))
+
+
+nege.p <- ggplot(data = nege_preds_df|>select(-model)|>filter(nege_alpha < 30))+
+  geom_line(aes(x = time, y = .pred, group = cohort_id, color = nege_alpha), alpha = 0.5)+
+  scale_y_continuous(limits = c(0, 1), breaks = c(0,0.25,0.5,0.75,1.0))+
+  scale_x_continuous(limits = c(0,max(preds_all_nege$time)), breaks = c(0,50,100,150,200, max(preds_all_nege$time)))+
+  #scale_color_jco()+
+  scale_color_gradient2(trans = "log", low = "red", mid = "grey", high = "black", breaks = c(0.1,0.3,1,3))+
+  #scale_color_gradient2()+
+  guides(color = guide_colorbar(title = expression(NEGE~alpha)))+
+  xlab("Day")+
+  ylab("Proportional Mass Remaining")+
+  theme_classic()+
+  theme(panel.background = element_rect(fill = "#F7F9F9"),
+        legend.title = element_text(size = 20), legend.text = element_text(size = 16), 
+        legend.position = c(0.9,0.78), legend.background = element_blank())
+nege.p
+nege.p + scale_x_continuous(limits = c(0,20))
+
+tidy_fits|>
+  select(cohort_id, nege_alpha, weibull_alpha)|>
+  pivot_longer(cols = -cohort_id, names_to = "model", values_to = "alpha")|>
+  filter(alpha <20)|>
+ggplot()+
+  geom_histogram(aes(x = alpha))+
+  facet_wrap(.~model)
+
+
+tidy_fits|>
+  select(cohort_id, nege_alpha, weibull_alpha)|>
+  mutate(diff = nege_alpha - weibull_alpha)|>
+  filter(diff<5)|>
+ggplot()+
+  geom_histogram(aes(x = diff)) # alpha almost universally increases
+
+ggplot(tidy_fits, aes(x = nege_k, y = nege_r))+geom_point()
+
+
+```
+```{r}
+derp <- nege_fits|>
+  filter(cohort_id == 437)|>
+  pluck("nege_fit")
+
+class(derp)
+```
+
+```{r}
+
+tidy_fits|>
+  select(negexp_k, discpar_a, discpar_k1, discpar_k2, discser_a, discser_k1, discser_k2, weibull_alpha, weibull_beta, nege_r, nege_k, nege_alpha, nege_beta)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_density()+
+  facet_wrap(.~parameter, scales = "free")
+
+tidy_fits|>
+  select(discpar_a, discpar_k1, discpar_k2)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~parameter, scales = "free")+
+  scale_x_continuous(limits = c(0,2))
+
+tidy_fits|>
+  select(discser_r, discser_k1, discser_k2)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~parameter, scales = "free")
+
+tidy_fits|>
+  select(discser_r)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()
+
+tidy_fits|>
+  select(discser_k1)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()+
+  scale_x_continuous(limits = c(0,2))
+
+tidy_fits|>
+  select(discser_k2)|>
+  pivot_longer(everything(), names_to = "parameter")|>
+ggplot(aes(x = value))+
+  geom_histogram()
+
+```
+
+
+
+## Likelihood optimization and the litterfitter package
+We used the litterfitter package, explained extensively in Cornwell and Weedon (2014), for the first approach. The litterfitter package minimizes the sum of squares using the L-BFGS-B algorithm, which is equivalent to maximizing the likelihood  under the assumed normally-distributed errors and constant variance. Error around the estimated parameters is estimated by bootstrapping: replicates of the time series are created by sampling with replacement, and then re-fit with the optimization procedure. This creates distributions of parameter values that convey uncertainty in the parameter value or create new predictions from the implied predictions of each parameter set. 
+
+-litterfitter defaults assume timescale of years, which is not generally appropriate for aquatic litter breakdown that tends to proceed much more quickly. The algorithm uses box constraints. 
+
+### Model Fitting
+litterfitter offers a lot of flexibility in easily fitting models to mass loss data and exploring the output. For now, we will use  time series that are best fit by several different models and represent three broad examples of decay trajectories. 
+
+
+
+```{r litterfitter fits to example time series}
+lf_iters<-9999 #takes 13 minutes on 1 core
+
+if(file.exists(here("data/lf_example_fits.Rds"))){
+  lf_example_fits <- readRDS(here("data/lf_example_fits.Rds"))
+  
+}else{
+  
+
+lf_example_fits <- example_series|>
+    select(cohort_id, time, mass)|>
+  group_by(cohort_id)|>
+  nest()|>ungroup()|>
+  mutate(negexp_fit = map(data, ~fit_litter(time = .$time, mass.remaining = .$mass, 
+                            model = "neg.exp", iters = lf_iters,
+                            upper = c(2),
+                            lower = c(1e-08))),
+         discpar_fit = map(data, ~fit_litter(time = .$time, mass.remaining = .$mass, 
+                            model = "discrete.parallel", iters = lf_iters,
+                            upper = c(1, 2, 2), #A, K1, K2 
+                            lower = c(0, 1e-12, 1e-17))),
+         weibull_fit = map(data, ~fit_litter(time = .$time, mass.remaining = .$mass, 
+                            model = "weibull", iters = lf_iters,
+                    lower = c(0.1,0.001), #beta, then alpha 
+                    upper = c(10000,100))))|>
+  mutate(negexp_bs = map(negexp_fit, ~bootstrap_parameters(., nboot = lf_iters, 
+                            upper = c(2),
+                            lower = c(1e-08))|>
+                           unclass()|>as_tibble(.name_repair = ~ c("k", "V2"))|>select(k)),
+        discpar_bs = map(discpar_fit, ~bootstrap_parameters(., nboot = lf_iters, 
+                            upper = c(1, 2, 2), #A, K1, K2 
+                            lower = c(0, 1e-12, 1e-17))|>
+          unclass()|>as_tibble(.name_repair = ~ c("A", "k1", "k2", "V4"))|>select(A, k1, k2)),
+        weibull_bs = map(weibull_fit, ~bootstrap_parameters(., nboot = lf_iters, 
+                            lower = c(0.1,0.001), #beta, then alpha 
+                            upper = c(10000,100))|>
+          unclass()|>as_tibble(.name_repair = ~ c("beta", "alpha", "V4"))|>select(alpha, beta)))
+
+saveRDS(lf_example_fits, here("data/lf_example_fits.Rds"))
+}
+#ggplot(lf_examples_bs$weibull_bs[[2]], aes(x = beta))+geom_density()
+
+```
+The distributions in these bootstrapped parameters suggest there is some instability, which is not too surprising if we are bootstrapping a relatively small sample where some samples can have particularly high leverage on the overall fit. 
+
+
+## MCMC estimation and brms
+A Bayesian approach to fitting the XXX time series will produce similar results as the optimization procedure with the analytical models, although somewhat slower particularly if parallelizing the bootstrapping, but the difference in software and approach (including post-hoc analyses) may be preferable to some users. A primary consideration for this approach is the incorporation of priors. Just as the optimization routine required upper and lower bounds on parameter values, prior knowledge on parameter values can be specified as a statistical distribution. Compared to noninformative priors (e.g., flat priors), weakly informative priors have many benefits including better fitting behavior while simply incorporating what we already believe about a process - using previous empirical data or understanding, weakly informative priors can make highly unbelievable parameter values highly unlikely (Lemoine Oikos 2019). Just as the optimization approach, broadly synthesized datasets can be used to construct probability distributions that reflect our beliefs about what parameters are realistic and which are basically impossible. For example, a half-life for tree-leaf litter of 1 day (k= XXX) is exceedingly unlikely (quickly leached compounds rarely appear to account for more than 30% mass loss, Taylor and Barlocher 1996), and a half-life of 10 years is also unlikely. Additionally, the use of the term 'half-life' even implies another prior belief - that mass decreases as a function of time (although microbial colonization and extremely minor leaching can rarely cause this result during early stages of decomposition). Thus, priors can be drawn from continuous, positive distributions such as the Gamma and lognormal. 
+
+###  Analyze priors
+
+```{r priors}
+
+priors_df <- bind_rows(
+  rlnorm(n = 5000, meanlog = -6, sdlog = 2)|>as_tibble()|>
+    mutate(parameter = "negexp_k", median = median(value)),
+  rgamma(n = 5000, 0.3,0.07)|>as_tibble()|>
+    mutate(parameter = "weibull_alpha", median = median(value)),
+  rlnorm(n = 5000, meanlog = 4.5, sdlog = 1.1)|>as_tibble()|>
+    mutate(parameter = "weibull_beta", median = median(value))
+)
+
+ggplot(priors_df, aes(x = value))+
+  geom_density()+
+  facet_wrap(.~parameter, scales = "free")+
+  theme_bw()
+
+priors_df|>
+  filter(case_when(
+    parameter == "negexp_k" ~ value < 0.1,
+    parameter == "weibull_alpha" ~ value < 20,
+    parameter == "weibull_beta" ~ value < 1000
+  ))|>
+ggplot(aes(x = value))+
+  geom_density()+
+  geom_vline(aes(xintercept = median))+
+  facet_wrap(.~parameter, scales = "free")+
+  theme_bw()+ggtitle("Filtered distributions to show dominant probability mass")
+# neg exp priors
+ggplot(data = rlnorm(n = 1000, meanlog = -6, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
+#k_priors <- prior(lognormal(-6,2), nlpar = "k", lb = 0)
+```
+
+
+
+```{r negexp prior pred sim}
+ndraw_pp <- 200
+
+# negexp
+negexp_tib <- tibble(
+  draw = 1:ndraw_pp,
+  k = rlnorm(n = ndraw_pp, meanlog = -5, sdlog = 1.5)
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = exp(-k*time))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "negexp")
+
+ggplot(negexp_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  theme_bw()
+```
+
+Could really think of these discrete parallel priors in two ways:
+1) Representing past evidence that might include nonidentifiable parameters - weakly informative priors
+2) Representing a very fast leachable fraction (e.g., ~90% leachable mass lost in first 5 days) - highly informative priors
+```{r discrete parallel prior sim}
+# discrete parallel alpha
+ggplot(data = runif(5000, 0,1)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
+
+ggplot(data = rbeta(n = 5000,10,1.5)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
+
+
+#discpar k1 - want mass centered around 0.25, but may need to assume we can get out to about 15
+ggplot(data = rlnorm(n = 1000, meanlog = -1, sdlog = 5)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,5))
+#discpar k2
+ggplot(data = rlnorm(n = 1000, meanlog = -1, sdlog = 4)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
+
+discpar_tib <- tibble(
+  draw = 1:ndraw_pp,
+  k1  = rlnorm(ndraw_pp, meanlog = -2, sdlog = 4),
+  k2 = rlnorm(ndraw_pp, meanlog = -3, sdlog = 4),
+  a = rbeta(n = ndraw_pp,10,1.5)
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = a*exp(-k1 * time) + (1 - a) * exp(-k2 * time))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "discrete_parallel")
+
+ggplot(discpar_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  theme_bw()
+
+```
+
+```{r discrete series prior sim}
+# discrete series r
+ggplot(data = rbeta(n = 5000,1,2.5)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
+
+#discser k1 - want mass centered around 0.25, but may need to assume we can get out to about 15
+ggplot(data = rlnorm(n = 1000, meanlog = -2.25, sdlog = 1.5)|>as_tibble())+geom_density(aes(x = value))#+scale_x_continuous(limits = c(0,5))
+
+#discser k2
+ggplot(data = rlnorm(n = 1000, meanlog = -4.5, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
+
+
+discser_tib <- tibble(
+  draw = 1:ndraw_pp,
+  k1  = rlnorm(ndraw_pp, meanlog = -2.25, sdlog = 1.5),
+  k2 = rlnorm(ndraw_pp, meanlog = -5, sdlog = 2.5),
+  r = rbeta(n = ndraw_pp,1,2.5) # Check this
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = (((1 - r) * k1 * exp(-k2 * time)) - ((k2 - k1 * r) * exp(-k1 * time)))/(k1 - k2))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "discrete_series")
+
+ggplot(discser_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  theme_bw()
+```
+
+
+```{r weibull prior sim}
+# Weibull alpha
+ggplot(data = rgamma(n = 5000, 1,0.2)|>as_tibble())+geom_density(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))+scale_x_continuous(breaks = c(1,10,50), limits = c(0,30))
+#weibull beta
+ggplot(data = rlnorm(n = 5000, meanlog = 5.5, sdlog = 1)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+
+#weibull
+
+weibull_tib <- tibble(
+  draw = 1:ndraw_pp,
+  beta  = rlnorm(ndraw_pp, meanlog = 5.5, sdlog = 1),
+  alpha = rgamma(ndraw_pp, shape = 1, rate = 0.2)
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = exp(-(time/beta)^alpha))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "weibull")
+
+ggplot(weibull_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  theme_bw()
+
+
+
+```
+
+```{r parallel negative exponential-generalized exponential prior sim}
+
+
+# pnge alpha
+ggplot(data = rgamma(n = 5000, shape = 1, rate = 0.2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+# pnge beta
+ggplot(data = rlnorm(n = 5000, meanlog = 5, sdlog = 1.5)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+# pnge r
+ggplot(data = rbeta(n = 5000, 1.5,8)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+# pnge k
+ggplot(data = rlnorm(n = 5000, meanlog = 0.2, sdlog = 0.1)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,2))+geom_vline(aes(xintercept = median(value)))
+
+
+# prior pred sim
+pnge_tib <- tibble(
+  draw = 1:ndraw_pp,
+  r = rbeta(ndraw_pp, 1.5, 8),
+  k1 = rlnorm(ndraw_pp, meanlog = 0.2, sdlog = 0.1), # fairly strong prior, but data seem to dominate likelihood in limited testing
+  beta  = rlnorm(ndraw_pp, meanlog = 5, sdlog = 1.5),
+  alpha = rgamma(ndraw_pp, shape = 1, rate = 0.2)
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = pnge_function(r = r, beta = beta, alpha = alpha, k1 = k1, time = time))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "pnge")#|>
+  #filter(alpha >1)
+
+pnge_tib_sum <- pnge_tib|>
+  group_by(time)|>
+  summarize(mean = mean(y), upper = quantile(y, 0.025), lower = quantile(y, 0.975))
+
+ggplot()+
+  geom_line(data=pnge_tib, aes(x = time, y = y, group = draw), alpha = 0.1)+
+  #geom_line(data=pnge_tib_sum, aes(x = time, y = mean), alpha = 0.8)+
+  #geom_line(data=pnge_tib_sum, aes(x = time, y = upper), alpha = 0.8, linetype = "dashed")+
+  #geom_line(data=pnge_tib_sum, aes(x = time, y = lower), alpha = 0.8, linetype = "dashed")+
+  theme_bw()
+
+```
+
+```{r prior pred sim plot}
+
+pp_sims_df <- bind_rows(negexp_tib, discpar_tib, discser_tib, weibull_tib, pnge_tib)|>
+  mutate(model_name = case_when(model == "negexp" ~ "Negative Exponential",
+                                model == "discrete_parallel" ~ "Discrete Parallel",
+                                model == "discrete_series" ~ "Discrete Series",
+                                model == "weibull" ~ "Weibull",
+                                model == "pnge" ~ "Parallel Negative-Generalized Exponential"))|>
+  mutate(model_name = fct_relevel(model_name, "Negative Exponential","Discrete Parallel","Weibull","Parallel Negative-Generalized Exponential"))|>
+  filter(model != "discrete_series")
+
+ggplot(pp_sims_df, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  scale_x_continuous(limits = c(0,500))+
+  facet_wrap(.~model_name)+
+  ylab("Proportional Mass Remaining")+
+  xlab("Time (Days)")+
+  theme_bw()
+
+```
+
+### Model Fitting
+```{r set up brms priors and formulae}
+# Negative exponential
+k_bf <- bf(mass ~ exp(-k*time), k ~1, nl = TRUE)
+k_priors <- prior(lognormal(-5,1.5), nlpar = "k", lb = 0)
+
+## Discrete parallel
+discpar_bf <- bf(mass ~ a*exp(-k1 * time) + (1 - a) * exp(-k2 * time),
+                 a + k1 + k2 ~ 1, nl = TRUE)
+
+discpar_priors <- prior(beta(10,1.5), nlpar = "a", lb = 0, ub = 1)+
+  prior(lognormal(-2,4), nlpar = "k1", lb = 0)+
+  prior(lognormal(-3,4), nlpar = "k2", lb = 0) # terrible priors
+
+
+## Discrete series
+discser_bf <- bf(mass ~ (((1 - r)*k1*exp(-k2*time)) - ((k2 - k1*r)*exp(-k1*time)))/(k1 - k2),
+                 r + k1 + k2 ~ 1, nl = TRUE)
+
+discser_priors <- prior(beta(1,2.5), nlpar = "r", lb = 0, ub = 1)+
+  prior(lognormal(-2.25,1.5), nlpar = "k1", lb = 0)+
+  prior(lognormal(-5,2.5), nlpar = "k2", lb = 0)
+
+## Weibull
+weibull_bf <- bf(mass ~ exp(-(time/beta)^alpha), beta + alpha ~1, nl = TRUE)
+weibull_priors <- prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5.5,1), nlpar = "beta", lb = 0)
+
+# pnge
+pnge_priors <- prior(beta(1.5,8), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
+  prior(lognormal(0.2,0.1), nlpar = "k1", lb = 0)+ #fractional mass loss where all leaching done (5% leachable remaining) in 2-3 days, with most mass around  
+  prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5,1.5), nlpar = "beta", lb = 0)
+
+
+pnge_priors2 <- prior(beta(1.5,8), nlpar = "r", lb = 0, ub = 1)+ # makes leachable mass >0.5 very unlikely
+  prior(lognormal(-1,0.5), nlpar = "k1", lb = 0)+ #fractional mass loss where all leaching done (5% leachable remaining) in 2-3 days, with most mass around  
+  prior(gamma(1,0.2), nlpar = "alpha", lb = 0)+
+  prior(lognormal(5,1.5), nlpar = "beta", lb = 0)
+
+pnge_bf <- bf(
+  mass ~ r * exp(-k1 * time) + (1 - r) * exp(-(time / beta)^alpha),
+  r + k1 + alpha + beta ~ 1,
+  nl = TRUE
+)
+
+```
+
+```{r fit brms models}
+# example series: 118,289,436
+
+
+k_118_brm <- brm(formula = k_bf, prior = k_priors,
+                 data = example_series|>filter(cohort_id == 118), 
+                 family = "gaussian", 
+                 iter = 4000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/k_118_brm"))
+k_289_brm <- brm(formula = k_bf, prior = k_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 4000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/k_289_brm"))
+k_436_brm <- brm(formula = k_bf, prior = k_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 4000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/k_436_brm"))
+
+
+weib_118_brm <- brm(formula = weibull_bf, prior = weibull_priors,
+                 data = example_series|>filter(cohort_id == 118), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99), 
+                 file = here("data/brms_objects/weib_118_brm")) # model hard to converge here
+weib_289_brm <- brm(formula = weibull_bf, prior = weibull_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/weib_289_brm")) # pairs plot here has some non-identifiability in  beta/alpha
+weib_436_brm <- brm(formula = weibull_bf, prior = weibull_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/weib_436_brm"))
+
+
+
+discpar_289_brm <- brm(formula = discpar_bf, prior = discpar_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discpar_289_brm"))
+
+discser_118_brm <- brm(formula = discser_bf, prior = discser_priors,
+                 data = example_series|>filter(cohort_id == 118), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discser_118_brm"))
+
+discser_289_brm <- brm(formula = discser_bf, prior = discser_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discser_289_brm"))
+
+discser_436_brm <- brm(formula = discser_bf, prior = discser_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 6000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99),
+                 file = here("data/brms_objects/discser_436_brm"))
+
+pnge_118_brm <- brm(formula = pnge_bf, prior = pnge_priors,
+                 data = example_series|>filter(cohort_id == 118), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000,
+                 control= list(adapt_delta = 0.99), 
+                 file = here("data/brms_objects/pnge_118_brm")) 
+
+pnge_289_brm <- brm(formula = pnge_bf, prior = pnge_priors,
+                 data = example_series|>filter(cohort_id == 289), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/pnge_289_brm")) # 2 divergent transitions
+
+pnge_436_brm <- brm(formula = pnge_bf, prior = pnge_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/pnge_436_brm"))
+
+pnge_436_brm2 <- brm(formula = pnge_bf, prior = pnge_priors2,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000)
+
+pairs(pnge_436_brm)
+waic(pnge_436_brm,discser_436_brm)
+s289t <- example_series|>filter(cohort_id == 289)|>pull(time)
+s289m <- example_series|>filter(cohort_id == 289)|>pull(mass)
+blah <- litterfitter::fit_litter(time = example_series|>filter(cohort_id == 289)|>pull(time), mass = example_series|>filter(cohort_id == 289)|>pull(mass), model = "discpar.negexp.genexp", iters = 9999)
+
+blah436 <- litterfitter::fit_litter(time = example_series|>filter(cohort_id == 436)|>pull(time), mass = example_series|>filter(cohort_id == 436)|>pull(mass), model = "discpar.negexp.genexp", iters = 9999)
+
+conditional_effects(pnge_436_brm, "time")
+```
+
+```{r}
+n118 <- max(litter_df$time[litter_df$cohort_id == 118])
+n289 <- max(litter_df$time[litter_df$cohort_id == 289])
+n436 <- max(litter_df$time[litter_df$cohort_id == 436])
+pnge_pd_118 <-tibble(time = seq(0,n118, by = 0.5))|>add_epred_draws(pnge_118_brm,ndraws = 5000)|>
+  tidybayes::mean_hdi()
+pnge_pd_289 <-tibble(time = seq(0,n289, by = 1))|>add_epred_draws(pnge_289_brm,ndraws = 1000)|>
+  tidybayes::mean_hdi()
+pnge_pd_436 <-tibble(time = seq(0,n436, by = 1))|>add_epred_draws(pnge_436_brm,ndraws = 1000)|>
+  tidybayes::mean_hdi()
+pnge2_pd_436 <-tibble(time = seq(0,n436, by = 1))|>add_epred_draws(pnge_436_brm2,ndraws = 1000)|>
+  tidybayes::mean_hdi()
+
+#p1 <- 
+ggplot(pnge_pd_118)+
+  geom_line(aes(x = time, y = .epred))+
+  geom_line(aes(x = time, y = .upper), linetype = "dotted")+
+  geom_line(aes(x = time, y = .lower), linetype = "dotted")+
+  geom_point(data = litter_df|>filter(cohort_id == 118), aes(x = time, y = mass))
+
+ggplot(pnge_pd_289)+
+  geom_line(aes(x = time, y = .epred))+
+  geom_line(aes(x = time, y = .upper), linetype = "dotted")+
+  geom_line(aes(x = time, y = .lower), linetype = "dotted")+
+  geom_point(data = litter_df|>filter(cohort_id == 289), aes(x = time, y = mass))
+ggplot(pnge_pd_436)+
+  geom_line(aes(x = time, y = .epred))+
+  geom_line(aes(x = time, y = .upper), linetype = "dotted")+
+  geom_line(aes(x = time, y = .lower), linetype = "dotted")+
+  geom_point(data = litter_df|>filter(cohort_id == 436), aes(x = time, y = mass))+
+  scale_x_continuous(limits = c(0,10))
+ggplot(pnge2_pd_436)+
+  geom_line(aes(x = time, y = .epred))+
+  geom_line(aes(x = time, y = .upper), linetype = "dotted")+
+  geom_line(aes(x = time, y = .lower), linetype = "dotted")+
+  geom_point(data = litter_df|>filter(cohort_id == 436), aes(x = time, y = mass))+
+  scale_x_continuous(limits = c(0,10))
+
+```
+
+
+
+```{r brms loops setup data}
+#Loops from Robin Blythe on Bluesky - https://bsky.app/profile/rbly.bsky.social/post/3m64hxkshfc2x
+ncores <- 4
+#start with nested data
+nested_litter_df <- litter_df|>
+  select(cohort_id, time, mass)|>
+  group_by(cohort_id)|>
+  nest()|>ungroup()#|>
+  #slice_head(n=2) # for testing
+```
+
+
+```{r negexp loops}
+
+#compile_brm as object to start from
+compile_brm_negexp <- brm(
+  formula = k_bf, 
+  prior = k_priors,
+  data = nested_litter_df$data[[1]],
+  chains = 0,
+  cores = ncores,
+  init = 0
+)
+
+#fitting function
+fit_brm_negexp <- function(d){
+  update(
+    compile_brm_negexp,
+    newdata = d,
+    recompile = FALSE,
+    chains = ncores, 
+    warmup = 2000,
+    iter = 4000, #okay for negexp but need way different to avoid negative transitions on more complex models
+    refresh = 0
+  )
+}
+
+future::plan(future::multisession, workers = 3)
+brm_fits_par <- furrr::future_map(
+  nested_litter_df$data,
+  fit_brm_fn_negexp,
+  .options = furrr::furrr_options(seed = 200)
+)
+
+negexp_fits <- nested_litter_df|>
+  mutate(negexp_brm = map(data,
+  fit_brm_negexp
+)) # very fast
+
+
+negexp_fits|>
+  saveRDS("C:/Users/Caleb/Box/Temp/negexp_fits.Rds")
+count_divtrans <- function(x){
+  sum(x$fit@sim$sampler_diagnostics[, , "divergent__"])
+}
+
+brm_fits2 <- brm_fits|>
+  mutate(divtrans = map_dbl(negexp_brm,
+  count_divtrans
+))
+
+
+print(object.size(brm_fits), units = "Mb")
+
+```
+
+```{r weibull loops}
+
+#compile_brm as object to start from
+compile_brm_weibull <- brm(
+  formula = weibull_bf, 
+  prior = weibull_priors,
+  data = nested_litter_df$data[[1]],
+  chains = 0,
+  cores = ncores,
+  control = list(adapt_delta = 0.99),
+  init = 0
+)
+
+#fitting function
+fit_brm_weibull <- function(d){
+  update(
+    compile_brm_weibull,
+    newdata = d,
+    recompile = FALSE,
+    chains = ncores, 
+    warmup = 2000,
+    iter = 5000,
+    refresh = 0
+  )
+}
+#
+#future::plan(future::multisession, workers = 3)
+#brm_fits_par <- furrr::future_map(
+#  nested_litter_df$data,
+#  fit_brm_fn_negexp,
+#  .options = furrr::furrr_options(seed = 200)
+#)
+tic()
+weibull_fits <- nested_litter_df|>
+  mutate(weibull_brm = map(data,
+  fit_brm_weibull
+)) 
+toc() #~3 min
+
+weibull_fits|>
+  saveRDS("C:/Users/Caleb/Box/Temp/weibull_fits.Rds")
+
+count_divtrans <- function(x){
+  sum(x$fit@sim$sampler_diagnostics[, , "divergent__"])
+}
+
+weibull_fits2 <- weibull_fits|>
+  mutate(divtrans = map_dbl(weibull_brm, count_divtrans))
+
+blah <- weibull_fits2|>filter(cohort_id == 395)
+blah2 <- pnge_fits2|>filter(cohort_id == 395)
+
+plot_predictions(blah$weibull_brm[[1]], draw = FALSE, condition = "time")|>
+  ggplot()+
+  geom_line(aes(x = time, y = estimate))+
+  geom_line(aes(x = time, y = conf.low), color = "blue")+
+  geom_line(aes(x = time, y = conf.high), color = "blue")+
+  geom_point(data = weibull_fits2|>filter(cohort_id == 395)|>pluck("data", 1), aes(x = time, y = mass))
+
+print(object.size(weibull_fits), units = "Mb")
+
+waic(blah$weibull_brm[[1]], blah2$pnge_brm[[1]])
+
+```
+
+```{r disc par loops}
+
+#compile_brm as object to start from
+compile_brm_discpar <- brm(
+  formula = discpar_bf, 
+  prior = discpar_priors,
+  data = nested_litter_df$data[[1]],
+  chains = 0,
+  cores = ncores,
+  control = list(adapt_delta = 0.99),
+  init = 0
+)
+
+#fitting function
+fit_brm_discpar <- function(d){
+  update(
+    compile_brm_discpar,
+    newdata = d,
+    recompile = FALSE,
+    chains = ncores, 
+    warmup = 2000,
+    iter = 5000,
+    refresh = 0
+  )
+}
+#
+#future::plan(future::multisession, workers = 3)
+#brm_fits_par <- furrr::future_map(
+#  nested_litter_df$data,
+#  fit_brm_fn_negexp,
+#  .options = furrr::furrr_options(seed = 200)
+#)
+tic()
+discpar_fits <- nested_litter_df|>
+  mutate(discpar_brm = map(data,
+  fit_brm_discpar
+)) 
+toc() #~7 min
+discpar_fits|>
+  saveRDS("C:/Users/Caleb/Box/Temp/discpar_fits.Rds")
+
+count_treedepth_hits <- function(fit) {
+  np <- nuts_params(fit)
+  max_td <- max(np$Value[np$Parameter == "treedepth__"])
+  
+  sum(
+    np$Parameter == "treedepth__" &
+      np$Value == max_td
+  )
+}
+
+discpar_fits2 <- discpar_fits %>%
+  mutate(
+    treedepth_hits = map_int(discpar_brm, count_treedepth_hits),
+    treedepth_exceeded = treedepth_hits > 0
+  )
+
+blah <- discpar_fits2|>filter(cohort_id == 395)
+
+conditional_effects(blah$discpar_brm[[1]])
+print(object.size(discpar_fits), units = "Mb")
+
+```
+
+```{r pnge loops}
+
+#compile_brm as object to start from
+compile_brm_pnge<- brm(
+  formula = pnge_bf, 
+  prior = pnge_priors,
+  data = nested_litter_df$data[[1]],
+  chains = 0,
+  cores = ncores,
+  control = list(adapt_delta = 0.99),
+  init = 0
+)
+
+#fitting function
+fit_brm_pnge <- function(d){
+  update(
+    compile_brm_pnge,
+    newdata = d,
+    recompile = FALSE,
+    chains = ncores, 
+    warmup = 2000,
+    iter = 5000,
+    refresh = 0
+  )
+}
+#
+#future::plan(future::multisession, workers = 3)
+#brm_fits_par <- furrr::future_map(
+#  nested_litter_df$data,
+#  fit_brm_fn_negexp,
+#  .options = furrr::furrr_options(seed = 200)
+#)
+tic()
+pnge_fits <- nested_litter_df|>
+  mutate(pnge_brm = map(data,
+  fit_brm_pnge
+)) 
+toc() #~10 min
+
+pnge_fits|>
+  saveRDS("C:/Users/Caleb/Box/Temp/pnge_fits.Rds")
+count_divtrans <- function(x){
+  sum(x$fit@sim$sampler_diagnostics[, , "divergent__"])
+}
+
+pnge_fits2 <- pnge_fits|>
+  mutate(divtrans = map_dbl(pnge_brm,
+  count_divtrans
+))
+
+
+
+count_treedepth_hits <- function(fit) {
+  np <- nuts_params(fit)
+  max_td <- max(np$Value[np$Parameter == "treedepth__"])
+  
+  sum(
+    np$Parameter == "treedepth__" &
+      np$Value == max_td
+  )
+}
+
+pnge_fits2 <- pnge_fits %>%
+  mutate(
+    treedepth_hits = map_int(pnge_brm, count_treedepth_hits),
+    treedepth_exceeded = treedepth_hits > 0
+  )
+print(object.size(pnge_fits), units = "Mb")
+
+
+blah <- pnge_fits2|>filter(cohort_id == 395)
+
+conditional_effects(blah$pnge_brm[[1]])
+
+ggplot(blah$data[[1]], aes(x = time, y = mass))+
+  geom_point()
+
+```
+
+### Example Analysis
+Calculate t50 with uncertainty for multiples
+
+```{r}
+
+pnge_436_brm <- brm(formula = pnge_bf, prior = pnge_priors,
+                 data = example_series|>filter(cohort_id == 436), 
+                 family = "gaussian", 
+                 iter = 5000, chains = 4, cores = 4, warmup = 2000, 
+                 file = here("data/brms_objects/pnge_436_brm"))
+
+ggplot()+
+  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass))+
+  geom_line(data = pnge_436_preds, aes(x = time, y = estimate))+
+  geom_line(data = pnge_436_preds, aes(x = time, y = conf.low), linetype = "dashed", color = "blue")+
+  geom_line(data = pnge_436_preds, aes(x = time, y = conf.high), linetype = "dashed", color = "blue")
+```
+
+```{r}
+#loop through models and calculate t50 for each. 
+
+#goal - compare t50 credible intervals across negexp and other model. 
+pnge_fits <- readRDS(here("pnge_fits.Rds"))
+
+tic()
+pnge_t0.5<-pnge_fits|>
+  mutate(pnge_t50 = map(pnge_brm, ~generate_predictions(model = ., get_draws = TRUE)|>generate_tx(M_x = 0.5)|>ungroup()))|>
+  mutate(pnge_t50_summarized = map(pnge_t50, ~summarize(., pnge_upper_t0.5 = quantile(t_0.5, 0.975),
+                                             pnge_lower_t0.5 = quantile(t_0.5, 0.025),
+                                             pnge_mean_t0.5 = mean(t_0.5),
+                                             pnge_span_t0.5 = pnge_upper_t0.5-pnge_lower_t0.5)))|>
+  unnest(pnge_t50_summarized)
+toc() #4.5 min
+
+negexp_fits <- readRDS(here("negexp_fits.Rds"))
+
+tic()
+negexp_t0.5<-negexp_fits|>
+  mutate(negexp_t50 = map(negexp_brm, ~generate_predictions(model = ., get_draws = TRUE)|>generate_tx(M_x = 0.5)|>ungroup()))|>
+  mutate(negexp_t50_summarized = map(negexp_t50, ~summarize(., negexp_upper_t0.5 = quantile(t_0.5, 0.975),
+                                             negexp_lower_t0.5 = quantile(t_0.5, 0.025),
+                                             negexp_mean_t0.5 = mean(t_0.5),
+                                             negexp_span_t0.5 = negexp_upper_t0.5-negexp_lower_t0.5)))|>
+  unnest(negexp_t50_summarized)
+
+t0.5_df <- negexp_t0.5|>left_join(pnge_t0.5)|>
+  left_join(litter_df|>select(cohort_id, time, mass)|>
+      group_by(cohort_id)|>
+      summarize(terminal_mass_prop = last(mass),
+             terminal_meas_day = last(time),
+             observations = n()-1))|>
+  filter(terminal_mass_prop <=0.5)
+
+ggplot(data = t0.5_df, aes(x = negexp_span_t0.5, y = pnge_span_t0.5, size = observations))+
+  geom_point(alpha = 0.3)+
+  geom_abline(slope = 1, intercept = 0)
+
+ggplot(data = t0.5_df, aes(x = negexp_mean_t0.5, y = pnge_mean_t0.5, size = observations))+
+  geom_point(alpha = 0.2)+
+  geom_abline(slope = 1, intercept = 0)
+```
+
+Looks like we tend to get very similar mean estimates of t0.5, with pnge estimates almost always longer, maybe by about 10 days at most. But the width of the credible intervals is almost always narrower for pnge, suggesting a better constraint. Which is reasonable because we are getting a more flexible. 
+
+
+```{r}
+ blah <- litter_df|>select(cohort_id, time, mass)|>
+      group_by(cohort_id)|>
+      mutate(terminal_mass_prop = last(mass),
+             terminal_meas_day = last(time)))
+```
+
+
+
+
+In cases where models are equivalent fits and nested, does the simpler model provide a tighter estimate?
+
+Only want to do this for data where time series that observe >50% loss.
+
+Closed form - look at posterior draws, calculate t50 for each draw, summarize
+Open form - threshold crossing problem
+
+Closed forms
+- Negexp
+- Weibull
+- PNEW doesn't have one?
+```{r}
+
+
+```
+
+
+
+
+
+
+# Deprecated
+
+
+
+# Comparison of estimation procedures
+
+
+
+
+### Confidence limits as functions of parameters
+We are often interested in quantities that are not the parameters themselves, but instead functions of the parameters. Although there are many potential solutions, we highlight three that work quite generally and are easy to implement in existing software.
+
+1. Non-parametric bootstrap
+This method uses bootstrapping to create a distribution of plausible fits given the boostrapped data. We create a bootstrapped dataset, pull the best-fit parameter values, and repeat this process a large number of times. This creates a distribution of parameters from which we can calculate confidence limits on either the parameters, expected mean, or derived quantities. Litterfitter already enables this bootstrapping, so it's a matter of extracting the bootstrapped parameter values. ACTUALLY I'M NOT SURE IF THIS IS WHAT LITTERFITTER IS DOING
+
+```{r extract litterfitter parameter distributions}
+blah <- lf_example_fits|>
+  select(cohort_id, negexp_bs, discpar_bs, weibull_bs)
+
+```
+
+2. Population prediction intervals/single-fit bootstrap
+This method uses the single best fit parameter values with the uncertainty represented by the Hessian matrix. The Hessian, in this case also called the information matrix, represents the likelihood surface for a set of parameters. Inverting the Hessian yields a variance-covariance matrix. We can then draw random samples from a multivariate normal distribution with the maximum likelihood parameters as the mean and the variance-covariance matrix as the variance. 
+
+```{r}
+#derived quantities needs to go into the mutate at the end of each of these sim_* functions
+
+calc_ci <- function(x){solve(pluck(x, "optimFit","hessian")/pluck(x, "optimFit","value"))
+}
+safe_solve <- possibly(calc_ci, "Error")
+
+sim_weibullbetas <- function(coefs, vcov, dat){
+  MASS::mvrnorm(9999, coefs, vcov)|>as_tibble()|>rename(beta = "V1", alpha = "V2")|>
+                                mutate(time = list(seq(min(pluck(dat, "time")), max(pluck(dat, "time")), by = 0.2)))|>
+                                rowwise()|>
+                                mutate(preds = list(predict_weibull(unlist(time), beta, alpha)))
+}
+
+sim_negexpbetas <- function(coefs, vcov, dat){
+  MASS::mvrnorm(1000, coefs, vcov)|>as_tibble()|>rename(k = "V1")|>
+                                mutate(time = list(pluck(dat, "time")))|>
+                                rowwise()|>
+                                mutate(preds = list(predict_negexp(unlist(time), k)))
+}
+
+sim_discparbetas <- function(coefs, vcov, dat){
+  MASS::mvrnorm(1000, coefs, vcov)|>as_tibble()|>rename(alpha = "V1", k1 = "V2", k2 = "V3")|>
+                                mutate(time = list(pluck(dat, "time")))|>
+                                rowwise()|>
+                                mutate(preds = list(predict_discpar(unlist(time), alpha, k1, k2)))
+}
+safe_simnegexp <- possibly(sim_negexpbetas, "Error")
+safe_simdiscpar <- possibly(sim_discparbetas, "Error")
+safe_simweibull <- possibly(sim_weibullbetas, "Error")
+
+
+
+lf_example_ci <- lf_example_fits|>
+  select(cohort_id, data, negexp_fit, weibull_fit, discpar_fit)|>
+  mutate(
+    negexp_covar = map(negexp_fit, safe_solve),
+    weibull_covar = map(weibull_fit, safe_solve),
+    discpar_covar = map(discpar_fit, safe_solve),
+    weibull_coef = map(weibull_fit, ~pluck(., "optimFit","par")),
+    negexp_coef = map(negexp_fit, ~pluck(., "optimFit","par")),
+    discpar_coef = map(discpar_fit, ~pluck(., "optimFit","par")))|>
+  mutate(negexp_betas = pmap(list(..1 = negexp_coef, ..2 = negexp_covar,..3 = data), ~safe_simnegexp(..1, ..2, ..3)),
+         discpar_betas = pmap(list(..1 = discpar_coef, ..2 = discpar_covar,..3 = data), ~safe_simdiscpar(..1, ..2, ..3)),
+         weibull_betas = pmap(list(..1 = weibull_coef, ..2 = weibull_covar,..3 = data), ~safe_simweibull(..1, ..2, ..3)))
+
+ 
+
+weibull_plot_data <- lf_example_ci|>
+  filter(cohort_id == 436)|>
+  pluck("weibull_betas", 1)|>
+  unnest(cols = c(time, preds))|>group_by(beta)|>
+  mutate(id = cur_group_id())
+
+weibull_plot_summaries<- weibull_plot_data|>
+  group_by(time)|>
+  summarize(upper = quantile(preds, 0.975),lower = quantile(preds, 0.025), mean = mean(preds))
+  
+ggplot()+
+  #geom_line(data = weibull_plot_data, aes(x = time, y = preds, group = id))+
+  geom_line(data = weibull_plot_summaries, aes(x = time, y = mean), color = "blue")+
+  geom_line(data = weibull_plot_summaries, aes(x = time, y = upper), color = "red", linetype = "dashed")+
+  geom_line(data = weibull_plot_summaries, aes(x = time, y = lower), color = "red",
+            linetype = "dashed")+
+  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass), alpha = 0.7)+
+  theme_bw()
+
+
+```
+
+
+
+
+- How to do this with bootstrapping/optim appropriately? Single-fit bootstrapping vs non-parametric bootstrap solution
+Probably need to compare regression estimates from one vs another under different non-linearity situations, and against the Bayesian posterior simulation.
+
+Optim approach 1: Non-parametric bootstrap
+- Obtain B sets of parameters, each set created from data resampling
+
+Optim approach 2: Single fit covariance matrix: Single fit bootstrap
+- Fit model
+- get asymptotic covariance matrix by inverting the Hessian (i.e., asymptotic information matrix) - see eqn 3 in Fletcher and Jowett 2022
+- Note that the hessian returned by optim may be numerically unstable, try to implement with numDeriv::hessian() - testing gave the same answer between the two Hessians
+- See 'test_new_litterfitter_functionality.R" for test workspace and load of litterfitter fork and 'internal.R' from litterfitter fork.
+
+"The inverse of the negative hessian is an estimator of the asymptotic covariance matrix"
+https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-with-a-hessian-matrix-how-to-calculate-paramet
+
+-simulate B parameter sets from the multivariate normal, plug in the parameter values and obtain intervals as the produced distributions
+
+3. Bayesian posterior simulation
+This method simply draws samples of parameters or expected fits from the posterior distribution. The draws create distributions of plausible parameter values or expected responses.
+
+```{r compile brms predictions}
+
+brms_post_preds <- function(model, ndraws, summarize){
+  
+  pred_grid <- tibble(time = seq(min(model$data$time), max(model$data$time), by = 0.2))
+  
+  if(summarize == FALSE){
+  pred_draws <- tidybayes::add_epred_draws(pred_grid, model, ndraws = ndraws)
+  }else{
+  pred_draws <- tidybayes::add_epred_draws(pred_grid, model, ndraws = ndraws)|>
+    tidybayes::median_qi()
+  }
+  
+  return(pred_draws)
+}
+
+weib_436_brm.post <- brms_post_preds(weib_436_brm, ndraws = 1000, summarize = TRUE)
+
+ggplot()+
+  geom_line(data = weib_436_brm.post, aes(x = time, y = .epred), color = "black")+
+  geom_line(data = weib_436_brm.post, aes(x = time, y = .lower), color = "red", linetype = "dashed")+
+  geom_line(data = weib_436_brm.post, aes(x = time, y = .upper), color = "red", linetype = "dashed")+
+  geom_point(data = example_series|>filter(cohort_id == 436), aes(x = time, y = mass), alpha = 0.7)+
+    theme_bw()
+```
+
+### Parameter distributions
+```{r plot parameter distributions from different methods}
+#tidybayes::
+discser_289_brm
+
+```
+
+### Expected value E[X]
+```{r plot fits from different methods}
+
+
+```
+
+## Model comparison and model averaging
+ Without a principled choice for a model, multiple models may make sense. 
+ 
+
+
+# Interpretation and analysis of analytical models
+We here are focused on the following questions:
+
+## Parameter comparison
+-Increasing parameters in data sparse situations increases the likelihood of nonidentifiability. 
+-Parameters don't mean the same thing across models, obviously, but they can be relatable. 
+-Does propagating uncertainty into the use of parameters influence our understanding?
+
+
+
+## Derived quantities: Median residence/transit time, half-life
+Sarquis and Sierra 2023 do this with median transit times across a couple of models, but don't calculate the error. 
+
+## Functional analysis with posterior simulations
+
+
+
+
+
+- Choice of model matters here: show error estimates with k vs weibull and biexponential parameters - think about both bias and variance in the error
+- Also relevant to demonstrate that Weibull's beta is (probably) useful here as a more reliable default parameter than k, when the data go to 37% mass loss. But still there are cases where something other than Weibull is a better fit and we would do best to propagate error into a model agnostic decay time
+
+## Continuous fragmentation losses
+
+
+```{r joint model approach}
+# model both time series and ALSO the difference between the quantities
+
+```
+
+## Two stage covariate analysis
+
+### Temperature
+- Direct approach
+- Meta-analysis
+What happens when we use k vs k with uncertainty propagated into the analysis
+
+### Nutrients
+
+
