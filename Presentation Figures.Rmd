@@ -8,6 +8,7 @@ date: "2026-01-11"
 knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
+library(yardstick)
 
 mytheme <- theme_bw(base_size = 18)+theme(panel.grid = element_blank(), 
                                           axis.title = element_text(face = "bold"), axis.text = element_text(face = "bold"))
@@ -23,6 +24,20 @@ ne_df <- tibble(
 )|>
   mutate(mass_e = ifelse(time !=0, mass + rnorm(n = n(), mean = 0, sd = 0.15), mass))
 
+ne_df2 <- tibble(
+  time = seq(0,100, by = 0.05),
+  k = rep(0.05, length(time)),
+  mass=exp(-k*time)
+)
+
+ne_df2pt <- tibble(
+  time = seq(0,100, by = 0.05),
+  k = rep(0.05, length(time)),
+  mass=exp(-k*time)
+)|>
+  filter(mass == 1 | round(mass, digits = 3) == 0.4)
+
+
 ggplot(ne_df)+
   #geom_point(aes(x = time, y = mass), size = 4)+
   geom_point(aes(x = time, y = mass_e), color = "blue", size = 4)+
@@ -35,11 +50,475 @@ ggplot(ne_df)+
   geom_smooth(aes(x = time, y = log(mass_e)),method = "lm", se = FALSE)+
   xlab("Days")+ylab("Log(Mass remaining proportion)")+
   mytheme
+
+ggplot(ne_df2)+
+  geom_smooth(aes(x = time, y = mass),method = "gam", se = FALSE)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1))+
+  mytheme
+
+ggplot()+
+  geom_smooth(data = ne_df, aes(x = time, y = log(mass)),method = "lm", se = FALSE)+
+  geom_point(data = ne_df2pt, aes(x = time, y = log(mass)), size = 5)+
+  xlab("Days")+ylab("Log(Mass remaining proportion)")+
+  #scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1))+
+  mytheme
+
 ```
 
 
 
+
+
 # Theoretical arguments 
-Grab Lecerf simulations
+Lecerf modeling
+
+```{r}
+pcdr <- expand_grid(
+  detrital_mass = seq(0, 5.2, by = 0.01),
+  c = c(-1,-0.5,0,0.22,0.5,1)
+)|>
+  mutate(pcdr = 0.25*(5.2-detrital_mass)^c)
+
+ggplot(pcdr|>filter(c == 0.22))+
+  geom_line(aes(x = detrital_mass, y = pcdr), linewidth = 1.5)+
+  xlab("Detrital Mass (g)")+ylab(expression(bold("Per capita decomposer rate (" * d^-1 * ")")))+
+  mytheme+scale_x_reverse()#+
+  #facet_wrap(.~c, scales = "free_y")
+```
+```{r}
+bm <- expand_grid(
+  detrital_mass = seq(0, 5.2, by = 0.01),
+  Bmax = c(400)
+)|>
+  mutate(B_M = (4*Bmax/(5.2^2))*(5.2-detrital_mass)*detrital_mass)
+
+ggplot(bm)+
+  geom_line(aes(x = detrital_mass, y = B_M), linewidth = 1.5)+
+  xlab("Detrital Mass (g)")+ylab("Decomposer Biomass (g)")+
+  mytheme+scale_x_reverse()+
+  geom_segment(aes(y = 403, yend = 400, x = 2.5, xend = 5.2),  linetype = "dashed")+
+  annotate("text", x = 5, y = 380, label = "bold(B[max])", parse = TRUE)
+  #facet_wrap(.~c, scales = "free_y")
+```
+
+```{r}
+leach <- expand_grid(
+  time = seq(0, 6, by = 0.01),
+  k = c(0.6)
+)|>
+  mutate(M_L = 2.8*exp(-k*time))
+
+ggplot(leach)+
+  geom_line(aes(x = time, y = M_L), linewidth = 1.5)+
+  ylab("Leachable mass (g)")+ xlab("Days")+
+  mytheme
+
+```
+
+# prior predct sims
+```{r negexp prior pred sim}
+ndraw_pp <- 100
+
+# negexp
+negexp_tib <- tibble(
+  draw = 1:ndraw_pp,
+  k = rlnorm(n = ndraw_pp, meanlog = -5, sdlog = 1.5)
+)|>
+  expand_grid(time = 0:250)|>
+  mutate(y = exp(-k*time))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "negexp")
+
+ggplot(negexp_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  mytheme
+
+ggplot(negexp_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  scale_y_continuous(trans="log", breaks = c(0.1, 0.2,0.4, 0.8,1))+
+  mytheme
+```
+
+Could really think of these discrete parallel priors in two ways:
+1) Representing past evidence that might include nonidentifiable parameters - weakly informative priors
+2) Representing a very fast leachable fraction (e.g., ~90% leachable mass lost in first 5 days) - highly informative priors
+```{r discrete parallel prior sim}
+# discrete parallel alpha
+ggplot(data = runif(5000, 0,1)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
+
+ggplot(data = rbeta(n = 5000,10,1.5)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
 
 
+#discpar k1 - want mass centered around 0.25, but may need to assume we can get out to about 15
+ggplot(data = rlnorm(n = 1000, meanlog = -1, sdlog = 5)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,5))
+#discpar k2
+ggplot(data = rlnorm(n = 1000, meanlog = -1, sdlog = 4)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
+
+discpar_tib <- tibble(
+  draw = 1:ndraw_pp,
+  k1  = rlnorm(ndraw_pp, meanlog = -2, sdlog = 4),
+  k2 = rlnorm(ndraw_pp, meanlog = -3, sdlog = 4),
+  a = rbeta(n = ndraw_pp,10,1.5)
+)|>
+  expand_grid(time = 0:250)|>
+  mutate(y = a*exp(-k1 * time) + (1 - a) * exp(-k2 * time))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "discrete_parallel")
+
+ggplot(discpar_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  mytheme
+
+ggplot(discpar_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  scale_y_continuous(trans="log", breaks = c(0.1, 0.2,0.4, 0.8,1))+
+  mytheme
+
+
+```
+
+```{r discrete series prior sim}
+# discrete series r
+ggplot(data = rbeta(n = 5000,1,2.5)|>as_tibble())+geom_histogram(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))
+
+#discser k1 - want mass centered around 0.25, but may need to assume we can get out to about 15
+ggplot(data = rlnorm(n = 1000, meanlog = -2.25, sdlog = 1.5)|>as_tibble())+geom_density(aes(x = value))#+scale_x_continuous(limits = c(0,5))
+
+#discser k2
+ggplot(data = rlnorm(n = 1000, meanlog = -4.5, sdlog = 2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,0.5))
+
+
+discser_tib <- tibble(
+  draw = 1:ndraw_pp,
+  k1  = rlnorm(ndraw_pp, meanlog = -2.25, sdlog = 1.5),
+  k2 = rlnorm(ndraw_pp, meanlog = -5, sdlog = 2.5),
+  r = rbeta(n = ndraw_pp,1,2.5) # Check this
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = (((1 - r) * k1 * exp(-k2 * time)) - ((k2 - k1 * r) * exp(-k1 * time)))/(k1 - k2))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "discrete_series")
+
+ggplot(discser_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  theme_bw()
+```
+
+
+```{r weibull prior sim}
+# Weibull alpha
+ggplot(data = rgamma(n = 5000, 1,0.2)|>as_tibble())+geom_density(aes(x = value))+
+  geom_vline(aes(xintercept = median(value)))+scale_x_continuous(breaks = c(1,10,50), limits = c(0,30))
+#weibull beta
+ggplot(data = rlnorm(n = 5000, meanlog = 5.5, sdlog = 1)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+
+#weibull
+
+weibull_tib <- tibble(
+  draw = 1:ndraw_pp,
+  beta  = rlnorm(ndraw_pp, meanlog = 5.5, sdlog = 1),
+  alpha = rgamma(ndraw_pp, shape = 1, rate = 0.2)
+)|>
+  expand_grid(time = 0:250)|>
+  mutate(y = exp(-(time/beta)^alpha))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "weibull")
+
+ggplot(weibull_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  mytheme
+
+ggplot(weibull_tib, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  xlab("Days")+ylab("Mass remaining (proportion)")+
+  scale_y_continuous(trans="log", breaks = c(0.1, 0.2,0.4, 0.8,1))+
+  mytheme
+
+```
+
+```{r parallel negative exponential-generalized exponential prior sim}
+
+
+# pnge alpha
+ggplot(data = rgamma(n = 5000, shape = 1, rate = 0.2)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+# pnge beta
+ggplot(data = rlnorm(n = 5000, meanlog = 5, sdlog = 1.5)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+# pnge r
+ggplot(data = rbeta(n = 5000, 1.5,8)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,1000))+geom_vline(aes(xintercept = median(value)))
+
+# pnge k
+ggplot(data = rlnorm(n = 5000, meanlog = 0.2, sdlog = 0.1)|>as_tibble())+geom_density(aes(x = value))+scale_x_continuous(limits = c(0,2))+geom_vline(aes(xintercept = median(value)))
+
+
+# prior pred sim
+pnge_tib <- tibble(
+  draw = 1:ndraw_pp,
+  r = rbeta(ndraw_pp, 1.5, 8),
+  k1 = rlnorm(ndraw_pp, meanlog = 0.2, sdlog = 0.1), # fairly strong prior, but data seem to dominate likelihood in limited testing
+  beta  = rlnorm(ndraw_pp, meanlog = 5, sdlog = 1.5),
+  alpha = rgamma(ndraw_pp, shape = 1, rate = 0.2)
+)|>
+  expand_grid(time = 0:1000)|>
+  mutate(y = pnge_function(r = r, beta = beta, alpha = alpha, k1 = k1, time = time))|>
+  group_by(draw)|>
+  filter(y >0.1)|>
+  mutate(model = "pnge")#|>
+  #filter(alpha >1)
+
+pnge_tib_sum <- pnge_tib|>
+  group_by(time)|>
+  summarize(mean = mean(y), upper = quantile(y, 0.025), lower = quantile(y, 0.975))
+
+ggplot()+
+  geom_line(data=pnge_tib, aes(x = time, y = y, group = draw), alpha = 0.1)+
+  #geom_line(data=pnge_tib_sum, aes(x = time, y = mean), alpha = 0.8)+
+  #geom_line(data=pnge_tib_sum, aes(x = time, y = upper), alpha = 0.8, linetype = "dashed")+
+  #geom_line(data=pnge_tib_sum, aes(x = time, y = lower), alpha = 0.8, linetype = "dashed")+
+  theme_bw()
+
+```
+
+```{r prior pred sim plot}
+
+pp_sims_df <- bind_rows(negexp_tib, discpar_tib, discser_tib, weibull_tib, pnge_tib)|>
+  mutate(model_name = case_when(model == "negexp" ~ "Negative Exponential",
+                                model == "discrete_parallel" ~ "Discrete Parallel",
+                                model == "discrete_series" ~ "Discrete Series",
+                                model == "weibull" ~ "Weibull",
+                                model == "pnge" ~ "Parallel Negative-Generalized Exponential"))|>
+  mutate(model_name = fct_relevel(model_name, "Negative Exponential","Discrete Parallel","Weibull","Parallel Negative-Generalized Exponential"))|>
+  filter(model != "discrete_series")
+
+ggplot(pp_sims_df, aes(x = time, y = y, group = draw))+
+  geom_line(alpha = 0.1)+
+  scale_x_continuous(limits = c(0,500))+
+  facet_wrap(.~model_name)+
+  ylab("Proportional Mass Remaining")+
+  xlab("Time (Days)")+
+  theme_bw()
+
+```
+
+# Model comparisons
+```{r}
+litter_df <- read_csv("https://github.com/robbinscalebj/revisiting-k/raw/refs/heads/main/data/derived_data/tidied_detrital_nutrients_data.csv")|> # tidied litter time series
+  mutate(mass_prop = Mass_per_remaining/100)|>
+  group_by(cohort_id)|>
+  mutate(series_length = n())|>
+  ungroup()|>
+  filter(series_length > 3)|>
+  rename(mass = "mass_prop", time = "Meas_Day")
+
+litter_fits_long <- readRDS(url("https://raw.githubusercontent.com/robbinscalebj/revisiting-k/main/data/derived_data/DetNut_litter_fits.rds"))|>
+  filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
+
+# These were fit similarr to litter_fits, but more recently - this is the discrete parallel negative exponential-generalized exponential
+nege_fits <- readRDS(here("DetNut_nege_fits.rds"))|>
+  filter(cohort_id %in% {litter_df|>distinct(cohort_id)|>pull(cohort_id)})
+
+tidy_fits <- 
+  litter_fits_long|>
+  mutate(negexp_converge_code = map_dbl(negexp_fit, ~pluck(., "optimFit", "convergence")),
+         negexp_k = map_dbl(negexp_fit, ~pluck(., "optimFit", "par", 1)),
+         negexp_AICc = map_dbl(negexp_fit, ~pluck(., "fitAICc")),
+         negexp_AIC = map_dbl(negexp_fit, ~pluck(., "fitAIC")),
+         negexp_logLik = map_dbl(negexp_fit, ~pluck(., "logLik")),
+         negexp_BIC = map_dbl(negexp_fit, ~pluck(., "fitBIC")),
+         negexp_pred = map(negexp_fit, ~pluck(., "predicted"))
+  )|>
+  mutate(weibull_converge_code = map_dbl(weibull_fit, ~pluck(., "optimFit", "convergence")),
+         weibull_beta = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 1)),
+         weibull_alpha = map_dbl(weibull_fit, ~pluck(., "optimFit", "par", 2)),
+         weibull_AICc = map_dbl(weibull_fit, ~pluck(., "fitAICc")),
+         weibull_AIC = map_dbl(weibull_fit, ~pluck(., "fitAIC")),
+         weibull_logLik = map_dbl(weibull_fit, ~pluck(., "logLik")),
+         weibull_BIC = map_dbl(weibull_fit, ~pluck(., "fitBIC")),
+         weibull_pred = map(weibull_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(discpar_converge_code = map_dbl(discpar_fit, ~pluck(., "optimFit", "convergence")),
+         discpar_a = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 1)),
+         discpar_k1 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 2)),
+         discpar_k2 = map_dbl(discpar_fit, ~pluck(., "optimFit", "par", 3)),
+         discpar_AICc = map_dbl(discpar_fit, ~pluck(., "fitAICc")),
+         discpar_AIC = map_dbl(discpar_fit, ~pluck(., "fitAIC")),
+         discpar_logLik = map_dbl(discpar_fit, ~pluck(., "logLik")),
+         discpar_BIC = map_dbl(discpar_fit, ~pluck(., "fitBIC")),
+         discpar_pred = map(discpar_fit, ~pluck(., "predicted")))
+         )|>
+  mutate(discser_converge_code = map_dbl(discser_fit, ~pluck(., "optimFit", "convergence")),
+         discser_r = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 1)),
+         discser_k1 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 2)),
+         discser_k2 = map_dbl(discser_fit, ~pluck(., "optimFit", "par", 3)),
+         discser_AICc = map_dbl(discser_fit, ~pluck(., "fitAICc")),
+         discser_AIC = map_dbl(discser_fit, ~pluck(., "fitAIC")),
+         discser_logLik = map_dbl(discser_fit, ~pluck(., "logLik")),
+         discser_BIC = map_dbl(discser_fit, ~pluck(., "fitBIC")),
+         discser_pred = map(discser_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(contqual_converge_code = map_dbl(contqual_fit, ~pluck(., "optimFit", "convergence")),
+         contqual_b = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 1)),
+         contqual_a = map_dbl(contqual_fit, ~pluck(., "optimFit", "par", 2)),
+         contqual_AICc = map_dbl(contqual_fit, ~pluck(., "fitAICc")),
+         contqual_AIC = map_dbl(contqual_fit, ~pluck(., "fitAIC")),
+         contqual_logLik = map_dbl(contqual_fit, ~pluck(., "logLik")),
+         contqual_BIC = map_dbl(contqual_fit, ~pluck(., "fitBIC")),
+         contqual_pred = map(contqual_fit, ~pluck(., "predicted"))
+         )|>
+  mutate(negexplim_converge_code = map_dbl(negexplim_fit, ~pluck(., "optimFit", "convergence")),
+         negexplim_k = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 1)),
+         negexplim_a = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 2)),
+         negexplim_b = map_dbl(negexplim_fit, ~pluck(., "optimFit", "par", 3)),
+         negexplim_AICc = map_dbl(negexplim_fit, ~pluck(., "fitAICc")),
+         negexplim_AIC = map_dbl(negexplim_fit, ~pluck(., "fitAIC")),
+         negexplim_logLik = map_dbl(negexplim_fit, ~pluck(., "logLik")),
+         negexplim_BIC = map_dbl(negexplim_fit, ~pluck(., "fitBIC")),
+         negexplim_pred = map(negexplim_fit, ~pluck(., "predicted"))
+  )#|> comment out to retain other time series
+  #left_join(nege_fits|>
+#  mutate(nege_converge_code = map_dbl(nege_fit, ~pluck(., "optimFit", "convergence")),
+    #     nege_r = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 1)),
+    #     nege_k = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 2)),
+    #     nege_alpha = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 3)),
+    #     nege_beta = map_dbl(nege_fit, ~pluck(., "optimFit", "par", 4)),
+    #     nege_AICc = map_dbl(nege_fit, ~pluck(., "fitAICc")),
+    #     nege_AIC = map_dbl(nege_fit, ~pluck(., "fitAIC")),
+    ##     nege_logLik = map_dbl(nege_fit, ~pluck(., "logLik")),
+    #     nege_BIC = map_dbl(nege_fit, ~pluck(., "fitBIC")),
+    #     nege_pred = map(nege_fit, ~pluck(., "predicted")))
+  #)|>
+  #select(-c(negexp_fit, weibull_fit, discser_fit, discpar_fit, contqual_fit, negexplim_fit, -nege_fit))
+
+mod_gof <- tidy_fits|>
+  #reshape for usability
+  select(cohort_id, contains(c("AIC", "AICc", "BIC", "logLik")))|>
+  pivot_longer(cols = -c(cohort_id), names_to = c("model", "gof_metric"), names_sep = "_", values_to = "value")|>
+  filter(model %in% c("negexp","discpar","weibull"))|>
+  group_by(cohort_id, gof_metric)|>
+  mutate(best_in_cohort = case_when(gof_metric == "logLik" & value == max(value) ~ 1, #select highest when logLik
+                                    gof_metric != "logLik" & value == min(value) ~ 1, # select lowest when AIC/BIC
+                                    .default = 0))
+
+
+fit_comparisons <- mod_gof|>
+  filter(best_in_cohort==1)|>
+  group_by(gof_metric, model)|>
+  count()|>
+  ungroup()|>group_by(gof_metric)|>mutate(per = n/sum(n))
+
+n_time_series <- length(unique(tidy_fits$cohort_id))
+
+
+
+```
+
+
+```{r comparison plots}
+fit_counts.p <- fit_comparisons|>
+  filter(gof_metric != "logLik" & gof_metric!="AIC")|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser", NegExpGenExp = "nege"))|>
+  ggplot(aes(x = gof_metric, y = n, fill = model), alpha =  1)+
+  geom_bar(stat = "identity")+
+  scale_fill_jco()+
+  scale_y_continuous(breaks = c(0,50,100, n_time_series))+
+  guides(fill = guide_legend("Model"))+
+  xlab("Model Comparison Metric")+
+  ylab("Count")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+
+fit_counts.p
+
+```
+
+# model errors
+```{r}
+fit_preds <- tidy_fits|>
+  mutate(series_length = map_dbl(negexp_pred, ~length(.)))|> # get length of time series (same across all fits so just picking one set of predictions produced by a fit)
+  relocate(series_length)|>left_join(
+    litter_df|>select(cohort_id, time, Mesh_Size_Category, mass)|>
+      mutate(mesh_cat = case_when(Mesh_Size_Category == "coarse" | Mesh_Size_Category == "fine" | Mesh_Size_Category == "open" ~ Mesh_Size_Category,
+                              Mesh_Size_Category < 1 ~ "fine",
+                              Mesh_Size_Category >= 1 ~ "coarse"))|>
+      group_by(cohort_id)|>
+      mutate(terminal_mass_prop = last(mass),
+             terminal_meas_day = last(time))|>
+      summarize(across(everything(), list))
+  )|>
+  select(-contains("negexplim"))|>
+  select(series_length, time, mass, cohort_id, ends_with("pred"))|>
+  group_by(cohort_id)|>
+  unnest(cols = c(time, mass, negexp_pred, weibull_pred, discpar_pred))|>
+  ungroup()|>
+  mutate(across(contains("pred"), ~.-mass, .names = "{.col}_error"))
+
+fit_rmse <- fit_preds|>
+  filter(time != 0)|>
+  group_by(cohort_id,series_length)|>
+  summarize(across(ends_with("pred"), ~yardstick::rmse_vec(truth = mass, estimate = .)))|>
+  pivot_longer(cols = contains("pred"), values_to = "rmse", names_to = "model")|>
+  mutate(model = str_remove(model, "_pred"))|>
+  filter(model %in% c("negexp","discpar","weibull"))
+  
+summed_rmse <- fit_rmse|>
+  filter(model == "weibull")
+quantile(summed_rmse$rmse, probs = c(0,0.9,0.75,0.5,0.25,0.1,0))  
+  
+fit_preds|>
+  filter(time != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value))+
+  geom_histogram()+
+  facet_wrap(.~name)
+
+fit_preds|>
+  mutate(series_length_category = case_when(series_length >8 ~ "9+",
+                                            .default = as.character(series_length)))|>
+  filter(time != 0)|>
+  pivot_longer(contains("error"))|>
+  ggplot(aes(x = value,  color = name))+
+  geom_density()+
+  facet_wrap(.~as_factor(series_length_category))+
+  scale_color_jco()+
+  theme_bw()
+
+
+
+
+rmse_dstr.p <- fit_rmse|>
+  mutate(model = fct_relevel(model, "weibull", "negexp", after = Inf),
+         model = fct_recode(model,Weibull = "weibull", NegExp = "negexp", NegExpGenExp = "nege", `Continuous Quality` = "contqual", `Discrete Parallel` = "discpar", 
+                            `Discrete Series` = "discser"))|>
+  ggplot(aes(x = rmse,  color = model))+
+  geom_density(linewidth = 1)+
+  scale_linetype_manual(values = c(5,2,3,4,1))+
+ # facet_wrap(.~as_factor(series_length))+
+  xlab("RMSE (Litter mass proportion)")+
+  ylab("Density")+
+  scale_color_jco(name = "Model")+
+  guides(linetype = "none")+
+  theme_classic()+
+  theme(axis.title = element_text(face = "bold", size = 16), axis.text = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14), legend.text = element_text(size = 12))
+  
+rmse_dstr.p    
+
+```
