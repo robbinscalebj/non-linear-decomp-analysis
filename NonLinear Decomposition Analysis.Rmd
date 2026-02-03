@@ -52,7 +52,7 @@ This model assumes that mass loss is lost at a linear, non-proportionally declin
 
 - Negative exponential (Olson 1963)
 $$
-M = e^{-kt}
+M_t = e^{-kt}
 $$
 
  For the negative exponential this is interpreted as a time-invariant 'proportional' mass loss. 
